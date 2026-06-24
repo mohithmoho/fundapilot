@@ -1,0 +1,88 @@
+<p align="center">
+  <img src="assets/logo.png" alt="FundaPilot" width="120" onerror="this.style.display='none'"/>
+</p>
+
+# FundaPilot — *Analyze. Value. Optimize.*
+
+**Institutional-grade equity research & portfolio optimization platform** · AI-powered valuation and portfolio analytics · professional investment-management tooling — in **one Python file**, for **Indian (NSE/BSE) and global** stocks, with plain-English benchmarks on every number. **No API keys, no paid services.**
+
+> ⚠️ **Educational use only. Not investment advice.** Data via Yahoo Finance + Google News. Verify before any decision.
+
+> 🖼️ **Logo:** the header logo is drawn inline (SVG) so it always renders. To use your own, drop a `logo.png` into an `assets/` folder — the README picks it up; the in-app SVG can be swapped in `fundapilot.py` (search `FundaPilot logo`).
+
+## Run it
+
+```bash
+pip install flask yfinance pandas numpy requests
+python fundapilot.py          # open http://localhost:5000
+python fundapilot.py selftest # runs the math/logic self-checks
+```
+
+That's the whole app — share `fundapilot.py` with anyone; they run those two lines. Host the repo on GitHub as-is.
+
+## What it does
+
+- **Find a stock** — live autocomplete with **🇮🇳 Indian results ranked first**, or **Explore by Country → Sector → Company**, or by **Category** (Large / Mid / Small cap, High-dividend, Aggressive).
+- **Filters** — time horizon, risk appetite, **investing style** (Buffett / Growth / Value / Dividend / Momentum / Balanced), capital, years of statements.
+- **Ratios with benchmarks** — P/E, P/B, PEG, ROE, margins, D/E, current ratio, EBITDA, PAT, FCF, dividend yield, beta — each shown with units (% or ×), a 🟢/🟡/🔴 rating, a one-line "what it means", and the benchmark range. Money is shown in the company's currency **and** converted to ₹.
+- **Valuation** — DCF + reverse-DCF → Undervalued / Fair / Overvalued + margin of safety. Robust FCF (falls back to Operating CF − Capex, then a net-income proxy) so you always get a verdict.
+- **Technical** — RSI(14) zones + EMA200 trend on daily & weekly, with benchmark notes and price charts.
+- **Scorecard /10** + a style-weighted score for your chosen investing style.
+- **Company / sector / peer analysis** — cap-category & tags, sector news-sentiment tally, side-by-side peer ratio table.
+- **Allocation & portfolio plan** — suggested weight, shares you can buy, and a **deployment method** (Lumpsum / SIP / DCA) chosen from your capital, risk, horizon, style and the valuation.
+- **Research summary** — auto Strengths / Risks / **Buy-Hold-Avoid** verdict per company.
+- **Model portfolios** — Conservative / Balanced / Aggressive **sector-allocation** templates; click a sector → live-screened **fundamentally strong** companies (rank by quality / dividend / momentum / low-beta).
+- **My portfolio (live)** — autocomplete add (India-first), live prices + P&L, 60s auto-refresh, **browser alerts** on ± % moves, a **live portfolio-news** feed, and manual total-capital input.
+- **Dividend income** — estimated **total annual dividend** the portfolio throws off, portfolio yield %, monthly average, and per-stock breakdown.
+- **Portfolio optimization & quant risk analytics** (Modern Portfolio Theory) — expected return, **CAGR**, volatility, **Sharpe** & **Sortino** ratios, **Jensen's alpha** vs NIFTY, diversification score, **efficient frontier**, **Monte Carlo** (1y, 2000 sims), **VaR** + **CVaR / Expected Shortfall** (1-day 95%), portfolio beta, max drawdown, sector concentration, **correlation matrix**, factor tilt, per-stock risk (beta / volatility / downside deviation / drawdown), **stress test** ("if NIFTY falls 15% → ₹ loss"), a **backtest vs NIFTY**, and **rebalancing** toward the max-Sharpe mix using current + extra capital. Every metric carries a plain-English benchmark.
+- **Markets dashboard** — NIFTY / SENSEX / Bank Nifty / India VIX, crude / gold / DXY / US-10Y / USD-INR, and **sector rotation** (1-month leaders). Optional **FRED** key adds Fed Funds / CPI / GDP.
+- **Watchlists** — Buffett-quality, High-ROE, Deep-Value, Small-cap compounders (screened live).
+- **Proof panel** — raw annual-statement numbers, exact DCF formula + inputs, FX rate, source links.
+- **"If I were you…"** — a final plain-language call from the whole analysis.
+
+## Data sources (all free, no keys)
+
+| Source | Used for | How |
+|---|---|---|
+| **Yahoo Finance** (`yfinance`) | Prices, ratios, statements, holders, corporate actions, FX, live quotes, indices, history for risk/MPT | Auto — `.NS`/`.BO` for NSE/BSE, plain symbol for global |
+| **Google News RSS** | Live company + sector + portfolio news (tone-tagged) | Auto, no key |
+| **FRED** (optional) | US Fed Funds / CPI / GDP on the Markets tab | Free key at fred.stlouisfed.org → `set FRED_API_KEY=...` |
+
+**Honest notes:** **Twitter/X** is excluded (its API is paid) — sentiment uses free news. **ROCE** isn't in free Yahoo data, so "High ROE" stands in (labelled). **CPI/GDP/Fed-Funds** need the optional free FRED key; everything else on the Markets tab is live from Yahoo. **MPT expected return** is the historical 2y mean, **not** a forecast — labelled in-app. **"All companies in a sector"** = sectoral-index constituents + liquid names (browsable); autocomplete reaches *any* listed stock.
+
+## How verdicts are computed (the proof, in short)
+- **DCF**: projects FCF at a faded growth rate over your horizon, discounts at a rate set by your risk band, adds a 3% terminal value → a fair market cap vs the current one.
+- **Reverse-DCF**: binary-searches the growth the current price is pricing in.
+- **RSI(14)** <30 oversold / >70 overbought; **EMA200** above = uptrend.
+- **Allocation**: capped at your risk band's max single-stock weight, scaled by conviction (the /10 score).
+
+- **Quant**: Sharpe/Sortino from annualized return vs risk; Jensen's alpha = port return − [rf + β·(benchmark − rf)]; VaR/CVaR from the historical return distribution; Monte Carlo simulates 252 days from the portfolio's mean/vol; efficient frontier samples 3000 random weightings.
+
+Limitations are marked `ponytail:` in the code (single-stage DCF, keyword news sentiment, dividend-yield unit normalization) with upgrade paths.
+
+## Files
+```
+fundapilot.py       # the entire app — backend + UI inlined (the only file you need to run)
+requirements.txt    # flask, yfinance, pandas, numpy, requests
+assets/logo.png     # optional — drop your logo here for the README
+```
+
+## How to make changes / add features
+
+Everything lives in `fundapilot.py`, in this order — find the section, edit, run `python fundapilot.py selftest`, then refresh the browser:
+
+| Want to… | Edit |
+|---|---|
+| **Add stocks to a sector / new sector** | the `UNIVERSE` dict near the top — just add tickers (`.NS`/`.BO` for India). |
+| **Add a watchlist** | the `WATCHLISTS` dict (give it a `pool` of tickers + a `tilt`). |
+| **Change a model portfolio** | the `MODELS` dict (sector → weight %). |
+| **Change a ratio benchmark / add a ratio** | the `BENCH` dict (units, good/ok cutoffs, plain-English text). |
+| **Add a market/macro tile** | the `IDX_MARKET` / `IDX_MACRO` / `IDX_SECTOR` dicts (label → Yahoo symbol). |
+| **Tweak a quant metric** | `portfolio_analytics()` (search the function) — returns one big JSON the UI renders. |
+| **Add an API endpoint** | add a `@app.route(...)` function near the other routes; return `jresp(...)`. |
+| **Change the UI** | the `HTML = r"""…"""` string — CSS at the top, JS at the bottom. Each tab has a `render*()` function. |
+| **Risk-free rate, cap thresholds, risk bands** | the `RF`, `cap_category()`, `RISK` constants. |
+
+**Workflow:** the app is plain Flask + vanilla JS (no build step). Edit → save → the server auto-reloads if you set `debug=True` in the last line, or just restart `python fundapilot.py`. Add a one-line `assert` to `_selftest()` for any new math so it stays correct.
+
+To version it: `git add -A && git commit -m "describe change"` then `git push`.
