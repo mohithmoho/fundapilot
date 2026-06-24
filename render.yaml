@@ -1,0 +1,17 @@
+# Render Blueprint — deploy FundaPilot as a public web service.
+# Render → New → Blueprint → pick this repo. It reads this file automatically.
+services:
+  - type: web
+    name: fundapilot
+    runtime: python
+    plan: free                      # free tier sleeps when idle (~30-60s cold start)
+    buildCommand: pip install -r requirements.txt
+    # 1 worker keeps memory under the 512MB free limit; threads handle slow yfinance calls.
+    # ponytail: timeout 120s because live data fetches can take 15-30s; raise workers when you upgrade the plan.
+    startCommand: gunicorn fundapilot:app --workers 1 --threads 8 --timeout 120 --bind 0.0.0.0:$PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"            # pinned: solid wheels for pandas/numpy/yfinance
+      # Optional — add in the Render dashboard to enable Fed Funds/CPI/GDP on the Markets tab:
+      # - key: FRED_API_KEY
+      #   sync: false

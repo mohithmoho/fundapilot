@@ -20,6 +20,19 @@ python fundapilot.py selftest # runs the math/logic self-checks
 
 That's the whole app — share `fundapilot.py` with anyone; they run those two lines. Host the repo on GitHub as-is.
 
+## Deploy a public link (Render)
+
+Want a URL anyone can open without installing Python? Deploy free on **Render** — it runs straight from this repo using the included `render.yaml`.
+
+1. Push this repo to GitHub (done).
+2. Go to **[render.com](https://render.com)** → sign up / log in (use "Sign in with GitHub").
+3. **New ▸ Blueprint** → connect your GitHub → pick the **`fundapilot`** repo → **Apply**. Render reads `render.yaml` and configures everything.
+4. Wait ~3–5 min for the first build. You get a permanent link like `https://fundapilot.onrender.com` — forward that to anyone.
+
+Notes: the **free tier sleeps after 15 min idle**, so the first visit after a nap takes ~30–60s to wake. Live data fetches (optimize/screen) take 15–30s. To enable Fed Funds/CPI/GDP, add a `FRED_API_KEY` env var in the Render dashboard.
+
+> Production server: `gunicorn` (in `requirements.txt`, configured in `render.yaml`). Locally you still just run `python fundapilot.py` — gunicorn is Linux-only and unused on Windows.
+
 ## What it does
 
 - **Find a stock** — live autocomplete with **🇮🇳 Indian results ranked first**, or **Explore by Country → Sector → Company**, or by **Category** (Large / Mid / Small cap, High-dividend, Aggressive).
