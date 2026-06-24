@@ -1091,6 +1091,17 @@ table{width:100%;border-collapse:collapse;font-size:14px}td,th{padding:8px 6px;b
 details summary{cursor:pointer;color:var(--mut);font-size:13px}.disc{font-size:11px;color:var(--mut);text-align:center;padding:20px}
 .kv{margin:6px 0}.kv b{color:var(--txt)}.rec{font-size:16px;line-height:1.6;padding:14px;border-radius:12px;background:linear-gradient(90deg,rgba(110,168,254,.12),rgba(179,155,255,.12));border:1px solid var(--line)}
 .news{max-height:320px;overflow:auto}.pos{color:var(--good)}.neg{color:var(--bad)}
+/* mobile: let wide tables scroll inside their card instead of being clipped (desktop unchanged) */
+@media(max-width:680px){
+  .wrap{padding:10px}section{padding:14px}h1{font-size:24px}
+  .cards{grid-template-columns:repeat(auto-fit,minmax(130px,1fr))}
+  .panel{grid-template-columns:1fr 1fr}
+  .glass{overflow-x:auto}
+  table{display:block;width:auto;min-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:nowrap;font-size:13px}
+  td,th{padding:7px 5px}
+  .rec{font-size:14px}
+}
+@media(max-width:420px){.cards,.panel{grid-template-columns:1fr}}
 </style></head><body>
 <header>
   <div style="display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap">
