@@ -1,6 +1,7 @@
 flask>=3.0
-yfinance>=0.2.40
+yfinance>=0.2.54   # recent enough to use curl_cffi browser impersonation by default
 pandas>=2.0
 numpy>=1.24
 requests>=2.31
-gunicorn>=21.2  # production server for Render/Linux (not used by local `python fundapilot.py`)
+curl_cffi>=0.7    # lets yfinance impersonate a real browser → far fewer Yahoo blocks from cloud IPs
+gunicorn>=21.2    # production server for Render/Linux (not used by local `python fundapilot.py`)

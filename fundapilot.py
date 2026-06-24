@@ -16,6 +16,7 @@ import os
 import sys
 import math
 import json
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -137,6 +138,27 @@ def _np_default(o):
 
 def jresp(obj, status=200):
     return Response(json.dumps(obj, default=_np_default), status=status, mimetype="application/json")
+
+
+# Yahoo's fundamentals endpoint (info) is heavily rate-limited from datacenter IPs (e.g. Render),
+# so retry, and cache successes only (never poison the cache with an empty/blocked response).
+# ponytail: process-memory cache; fine because Render restarts often. Add TTL if you self-host long-running.
+_INFO_CACHE = {}
+
+
+def get_info(sym):
+    if sym in _INFO_CACHE:
+        return _INFO_CACHE[sym]
+    for attempt in range(3):
+        try:
+            i = yf.Ticker(sym).info or {}
+            if len(i) > 5:  # a real payload, not a blocked/empty stub
+                _INFO_CACHE[sym] = i
+                return i
+        except Exception:
+            pass
+        time.sleep(0.6 * (attempt + 1))
+    return {}  # don't cache failures — retry next request
 
 
 def _g(info, *keys):
@@ -349,7 +371,7 @@ def fetch(ticker, years):
     t = yf.Ticker(ticker)
     info, notes = {}, []
     try:
-        info = t.info or {}
+        info = get_info(ticker)
     except Exception as e:
         notes.append(f"info: {e}")
     cur_code = "INR" if ticker.endswith((".NS", ".BO")) else (_g(info, "currency") or "USD")
@@ -416,7 +438,7 @@ def research_verdict(overall, verdict):
 @lru_cache(maxsize=512)
 def stock_sector(sym):
     try:
-        return yf.Ticker(sym).info.get("sector") or "Other"
+        return get_info(sym).get("sector") or "Other"
     except Exception:
         return "Other"
 
@@ -494,7 +516,7 @@ def portfolio_analytics(holdings, extra_capital=0):
     infos = {}
     for s in have:
         try:
-            infos[s] = yf.Ticker(s).info or {}
+            infos[s] = get_info(s)
         except Exception:
             infos[s] = {}
 
@@ -613,10 +635,7 @@ def _factor_tilt(syms, w, infos=None):
     for i, s in enumerate(syms):
         inf = (infos or {}).get(s)
         if inf is None:
-            try:
-                inf = yf.Ticker(s).info
-            except Exception:
-                inf = {}
+            inf = get_info(s)
         wi = float(w[i])
         pe += wi * (_g(inf, "trailingPE") or 0); pb += wi * (_g(inf, "priceToBook") or 0)
         mc += wi * (_g(inf, "marketCap") or 0); roe += wi * (_g(inf, "returnOnEquity") or 0)
@@ -653,10 +672,7 @@ def screen_pool(syms, tilt="fundamental"):
         pass
     rows = []
     for s in syms:
-        try:
-            i = yf.Ticker(s).info or {}
-        except Exception:
-            i = {}
+        i = get_info(s)
         pe, pb = _g(i, "trailingPE"), _g(i, "priceToBook")
         roe, de = _pct(_g(i, "returnOnEquity")), _g(i, "debtToEquity")
         dv, beta = _pct(div_yield_dec(i)), _g(i, "beta")
@@ -908,13 +924,10 @@ def peers_compare():
     syms = [s for s in (request.args.get("tickers") or "").split(",") if s][:7]
     rows = []
     for s in syms:
-        try:
-            i = yf.Ticker(s).info or {}
-            rows.append({"ticker": s, "name": _g(i, "shortName", "longName") or s, "pe": _g(i, "trailingPE"),
-                         "pb": _g(i, "priceToBook"), "roe": _pct(_g(i, "returnOnEquity")), "margin": _pct(_g(i, "profitMargins")),
-                         "rev_growth": _pct(_g(i, "revenueGrowth")), "marketCap": _g(i, "marketCap")})
-        except Exception:
-            rows.append({"ticker": s, "name": s})
+        i = get_info(s)
+        rows.append({"ticker": s, "name": _g(i, "shortName", "longName") or s, "pe": _g(i, "trailingPE"),
+                     "pb": _g(i, "priceToBook"), "roe": _pct(_g(i, "returnOnEquity")), "margin": _pct(_g(i, "profitMargins")),
+                     "rev_growth": _pct(_g(i, "revenueGrowth")), "marketCap": _g(i, "marketCap")})
     return jresp(rows)
 
 
