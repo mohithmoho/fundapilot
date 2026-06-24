@@ -367,20 +367,95 @@ def portfolio_plan(capital, risk, horizon, style, verdict, alloc):
                     f"Deploy it via {method.split('(')[0].strip().lower()} over ~{months} step(s) (~₹{round(stock_amt/months):,} each). Keep the rest diversified across sectors."}
 
 
+def _fast(t):
+    out = {}
+    try:
+        fi = t.fast_info
+        for k in ("last_price", "previous_close", "market_cap", "shares", "currency"):
+            try:
+                v = fi[k]
+                if v is not None:
+                    out[k] = v if k == "currency" else float(v)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return out
+
+
+def _srow(df, *names):
+    """First matching row of a yfinance statement as a most-recent-first Series, else None."""
+    if df is None or getattr(df, "empty", True):
+        return None
+    for n in names:
+        if n in df.index:
+            s = df.loc[n].dropna()
+            if len(s):
+                return s
+    return None
+
+
+def _compute_fundamentals(fin, bs, cf, fast, price, beta):
+    """Compute the standard `info` ratio fields from statements + fast_info, used to FILL any
+    field Yahoo's rate-limited `info` endpoint didn't return (keeps cloud deploys fully working).
+    Same keys/units as Yahoo, so the rest of the app is unchanged."""
+    f = {}
+    L = lambda s: float(s.iloc[0]) if s is not None and len(s) else None
+    P = lambda s: float(s.iloc[1]) if s is not None and len(s) > 1 else None
+    rev, ni = _srow(fin, "Total Revenue", "Operating Revenue"), _srow(fin, "Net Income", "Net Income Common Stockholders")
+    op, ebitda = _srow(fin, "Operating Income"), _srow(fin, "EBITDA", "Normalized EBITDA")
+    dep = _srow(fin, "Reconciled Depreciation", "Depreciation And Amortization", "Depreciation")
+    eq = _srow(bs, "Stockholders Equity", "Total Stockholder Equity", "Common Stock Equity")
+    debt = _srow(bs, "Total Debt")
+    ld, sd = _srow(bs, "Long Term Debt"), _srow(bs, "Current Debt", "Short Term Debt")
+    ca, cl = _srow(bs, "Current Assets", "Total Current Assets"), _srow(bs, "Current Liabilities", "Total Current Liabilities")
+    R, NI, OP, EB, EQ = L(rev), L(ni), L(op), L(ebitda), L(eq)
+    if EB is None and OP is not None and dep is not None:
+        EB = OP + L(dep)
+    D = L(debt)
+    if D is None and (ld is not None or sd is not None):
+        D = (L(ld) or 0) + (L(sd) or 0)
+    CA, CL = L(ca), L(cl)
+    mc, sh = fast.get("market_cap"), fast.get("shares")
+    if mc is None and price and sh:
+        mc = price * sh
+    if mc: f["marketCap"] = mc
+    if R: f["totalRevenue"] = R
+    if EB: f["ebitda"] = EB
+    if NI is not None: f["netIncomeToCommon"] = NI
+    if mc and NI and NI > 0: f["trailingPE"] = round(mc / NI, 2)
+    if mc and EQ and EQ > 0: f["priceToBook"] = round(mc / EQ, 2)
+    if NI is not None and EQ and EQ > 0: f["returnOnEquity"] = round(NI / EQ, 4)
+    if OP is not None and R: f["operatingMargins"] = round(OP / R, 4)
+    if NI is not None and R: f["profitMargins"] = round(NI / R, 4)
+    if D is not None and EQ and EQ > 0: f["debtToEquity"] = round(D / EQ * 100, 2)
+    if CA and CL: f["currentRatio"] = round(CA / CL, 2)
+    Rp, NIp = P(rev), P(ni)
+    if R and Rp: f["revenueGrowth"] = round(R / Rp - 1, 4)
+    if NI is not None and NIp and NIp > 0: f["earningsGrowth"] = round(NI / NIp - 1, 4)
+    if beta is not None: f["beta"] = beta
+    return f
+
+
 def fetch(ticker, years):
     t = yf.Ticker(ticker)
-    info, notes = {}, []
-    try:
-        info = get_info(ticker)
-    except Exception as e:
-        notes.append(f"info: {e}")
-    cur_code = "INR" if ticker.endswith((".NS", ".BO")) else (_g(info, "currency") or "USD")
+    notes = []
+    info = dict(get_info(ticker))          # copy so we never mutate the shared cache
+    fast = _fast(t)
+    cur_code = "INR" if ticker.endswith((".NS", ".BO")) else (_g(info, "currency") or fast.get("currency") or "USD")
     sym = {"INR": "₹", "USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥"}.get(cur_code, cur_code + " ")
-    price = _g(info, "currentPrice", "regularMarketPrice", "previousClose")
+    price = _g(info, "currentPrice", "regularMarketPrice", "previousClose") or fast.get("last_price")
+
+    fin = bs = cf = None
+    try: fin = t.financials
+    except Exception as e: notes.append(f"income stmt: {e}")
+    try: bs = t.balance_sheet
+    except Exception as e: notes.append(f"balance sheet: {e}")
+    try: cf = t.cashflow
+    except Exception as e: notes.append(f"cashflow: {e}")
 
     hist = {}
     try:
-        fin = t.financials
         if fin is not None and not fin.empty:
             cols = list(fin.columns)[:years]
             for label, key in [("Revenue", "Total Revenue"), ("EBITDA", "EBITDA"), ("Net Income", "Net Income")]:
@@ -389,10 +464,12 @@ def fetch(ticker, years):
     except Exception as e:
         notes.append(f"statements: {e}")
 
-    tech = {}
+    tech, daily_close = {}, None
     for tf, period, interval in [("daily", "2y", "1d"), ("weekly", "5y", "1wk")]:
         try:
             px = t.history(period=period, interval=interval)["Close"].dropna()
+            if tf == "daily":
+                daily_close = px
             if len(px) < 30:
                 continue
             r = rsi(px).iloc[-1]
@@ -404,6 +481,43 @@ def fetch(ticker, years):
                         "dates": [str(d.date()) for d in px.tail(180).index]}
         except Exception as e:
             notes.append(f"{tf} price: {e}")
+    if price is None and daily_close is not None and len(daily_close):
+        price = round(float(daily_close.iloc[-1]), 2)
+
+    # beta from daily returns vs benchmark (fills info when Yahoo's beta is blocked)
+    beta = None
+    try:
+        if daily_close is not None and len(daily_close) > 60:
+            bench = "^NSEI" if ticker.endswith((".NS", ".BO")) else "^GSPC"
+            bpx = yf.Ticker(bench).history(period="2y")["Close"].dropna().pct_change()
+            j = pd.concat([daily_close.pct_change(), bpx], axis=1).dropna()
+            if len(j) > 60 and float(np.var(j.iloc[:, 1])) > 0:
+                beta = round(float(np.cov(j.iloc[:, 0], j.iloc[:, 1])[0, 1] / np.var(j.iloc[:, 1])), 2)
+    except Exception:
+        pass
+
+    # dividend yield (decimal) from dividend history when info lacks it
+    div_dec = None
+    try:
+        divs = t.dividends
+        if divs is not None and len(divs) and price:
+            last12 = float(divs[divs.index >= (divs.index.max() - pd.Timedelta(days=365))].sum())
+            if last12 > 0:
+                div_dec = last12 / price
+    except Exception:
+        pass
+
+    # fill any missing info fields from statements/fast_info — never overwrite a real Yahoo value
+    computed = _compute_fundamentals(fin, bs, cf, fast, price, beta)
+    if div_dec is not None:
+        computed["dividendYield"] = div_dec
+    filled = []
+    for k, v in computed.items():
+        if _g(info, k) is None and v is not None:
+            info[k] = v
+            filled.append(k)
+    if filled:
+        notes.append("Computed from financial statements (live ratio feed unavailable): " + ", ".join(sorted(set(filled))))
 
     inst_pct, holders = None, []
     try:
