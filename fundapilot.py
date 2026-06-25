@@ -184,12 +184,16 @@ def _pct(x):
 
 
 def div_yield_dec(info):
-    # ponytail: recent yfinance returns dividendYield in PERCENT (e.g. 4.95), older in decimal.
-    # Normalize to a decimal fraction; >1 means it's percent units. Fall back to trailing (always decimal).
+    # trailingAnnualDividendYield is a reliable DECIMAL (e.g. 0.0066 = 0.66%) — prefer it.
+    # dividendYield in recent yfinance is PERCENT and ambiguous (0.4 means 0.4%, not 40%) — only a fallback.
+    # Non-payers report 0.0 / None, so we return 0/None and never fabricate a yield.
+    ty = _g(info, "trailingAnnualDividendYield")
+    if ty:                      # non-zero reliable decimal
+        return ty
     dy = _g(info, "dividendYield")
-    if dy is not None:
-        return dy / 100 if dy > 1 else dy
-    return _g(info, "trailingAnnualDividendYield")
+    if dy:                      # percent units → decimal
+        return dy / 100
+    return ty                   # 0.0 or None → genuinely no dividend
 
 
 @lru_cache(maxsize=16)
@@ -1455,7 +1459,10 @@ def evaluate_holding(sym, buy, horizon, bench_ret6m):
                 "health": health, "verdict": verdict,
                 "pnl_pct": round((price / buy - 1) * 100, 1) if buy else None,
                 "sl": sl, "sl_pct": round((sl / price - 1) * 100, 1),
-                "tp": tp, "tp_pct": round((tp / price - 1) * 100, 1), "expected_move_pct": exp_move_pct})
+                "tp": tp, "tp_pct": round((tp / price - 1) * 100, 1), "expected_move_pct": exp_move_pct,
+                # levels anchored at the investor's average buy price (not just current price)
+                "sl_buy": round(buy - 2 * atr, 2) if buy else None,
+                "tp_buy": round(buy + 3 * atr, 2) if buy else None})
     return out
 
 
@@ -1537,12 +1544,28 @@ def portfolio_eval(holdings, horizon, extra_capital):
     if conc > 30 and rotation:
         plan.append(f"⚠️ {sectors[0]['sector']} is {conc}% of the book — concentration risk. Leading sectors now: " +
                     ", ".join(f"{r['sector']} ({r['ret_1m_pct']:+}%)" for r in rotation[:3]) + ". Tilt trims toward leaders.")
+
+    # explicit step-by-step rebalancing recipe
+    horizon_word = {"short": "≤3-year", "medium": "3–7-year", "long": "7-year+"}.get(horizon, "")
+    steps = [
+        "Score — read each holding's verdict (Accumulate / Hold / Reduce / Exit) in the table below.",
+        ("Trim first — sell the Exit names and halve the Reduce names" + (f" ({', '.join(e['sym'].replace('.NS','') for e in to_trim)})" if to_trim else " (none right now)") + f"; that frees ≈₹{round(freed):,}."),
+        f"Fix concentration — keep any one sector under ~30% (yours: {sectors[0]['sector']} {conc}%). Trim the excess.",
+        ("Redeploy — put freed cash" + (f" + your ₹{extra_capital:,.0f} new cash" if have else "") +
+         " into the Accumulate names, preferring those trading below your buy price (average down) and in the leading sectors above."),
+        f"Set levels — use each holding's SL/TP (from current price AND from your avg buy). For a {horizon_word} horizon the real exit is a thesis break (verdict turns Reduce/Exit or the sector outlook sours), not a small price wobble.",
+    ]
+    # sector news for the top sectors (horizon-framed: what could move them in coming months)
+    sector_news = {}
+    for s in sectors[:3]:
+        nm = s["sector"]
+        sector_news[nm] = google_news(f"{nm} sector India outlook policy", n=3)
     return {"horizon": horizon, "extra_capital": extra_capital, "total_value": round(total),
             "overall_health": overall_health, "overall_verdict": overall_verdict, "portfolio_earnings_cagr": port_cagr,
             "holdings": sorted(valid, key=lambda e: -e["health"]), "errors": [e["sym"] for e in evals if "error" in e],
             "sectors": sectors, "concentration_pct": conc, "sector_rotation": rotation,
             "to_trim": [e["sym"] for e in to_trim], "to_add": [e["sym"] for e in to_add],
-            "freed_capital": round(freed), "substitutes": subs, "plan": plan,
+            "freed_capital": round(freed), "substitutes": subs, "plan": plan, "steps": steps, "sector_news": sector_news,
             "note": "Per-stock health = 60% fundamentals + 40% technicals. SL = price−2×ATR(14), TP = price+3×ATR (≈1.5 reward:risk); "
                     "expected move = daily σ × √(horizon trading days) = a 1-standard-deviation range. News/policy is qualitative — use it to "
                     "widen/tighten these levels and to confirm a Reduce/Exit. Educational only."}
@@ -2325,8 +2348,8 @@ function renderTracker(){const p=loadPort();
     <div class="panel" style="margin-top:10px"><div><label>Total capital for rebalancing (₹, manual)</label><input id="t-cap" type="number" min="0" value="${localStorage.getItem(CKEY)||200000}"></div>
     <div><label>Extra cash to deploy (₹)</label><input id="t-extra" type="number" min="0" value="0"></div>
     <div><label>Investment horizon</label><select id="t-hz"><option value="short">Short (≤3y)</option><option value="medium" selected>Medium (3–7y)</option><option value="long">Long (7y+)</option></select></div></div>
-    <div style="margin:10px 0"><button id="t-eval" class="full" style="margin-bottom:8px">🎯 Evaluate &amp; smart-rebalance (per-stock + SL/TP + substitutes)</button>
-    <button id="t-opt" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">🧮 Quant analytics (MPT/VaR)</button>
+    <div style="margin:10px 0"><button id="t-eval" class="full" style="margin-bottom:8px">🎯 Evaluate &amp; rebalance my portfolio</button>
+    <button id="t-opt" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">🧮 Quant analytics</button>
     <button id="t-notif" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">🔔 Enable alerts</button> <button id="t-refresh" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">↻ Refresh now</button> <span class="muted">Auto-refreshes every 60s.</span></div>
     <div id="t-table"><div class="muted">No holdings yet — add one above.</div></div></section>
     <div id="t-eval-out"></div><div id="t-opt-out"></div><div id="t-news"></div>`;
@@ -2350,27 +2373,53 @@ async function evalPort(){const p=loadPort();if(p.length<1){el('t-eval-out').inn
 function vcl(v){return (v==='Accumulate')?'pos':(v==='Exit'||v==='Reduce')?'neg':'';}
 function renderEval(d){const o=el('t-eval-out');o.innerHTML='';
   const oc=d.overall_health>=6.5?'v-under':d.overall_health>=5?'v-fair':'v-over';
-  o.append($(`<section class="glass"><h2>🎯 Portfolio evaluation &amp; smart rebalancing</h2>
+  o.append($(`<section class="glass"><h2>🎯 Portfolio evaluation</h2>
     <div class="grid cards"><div class="chip">Portfolio value<b>₹${fmt(d.total_value)}</b></div>
     <div class="chip">Overall health<b>${d.overall_health}/10</b></div>
     <div class="chip">Verdict<b><span class="verdict ${oc}">${d.overall_verdict}</span></b></div>
-    <div class="chip">Blended earnings CAGR<b>${d.portfolio_earnings_cagr==null?'—':d.portfolio_earnings_cagr+'%'}</b><span class="muted">vs NIFTY ~12%</span></div></div>
-    <h3>What to do now</h3>${d.plan.map(x=>`<div class="flag ${x.indexOf('⚠')>-1?'f-bad':'f-good'}">${x}</div>`).join('')}
-    <p class="muted">${d.note}</p></section>`));
-  // per-stock evaluation table
-  let t='<section class="glass"><h2>🔬 Every holding evaluated (like its own stock)</h2><table><tr><th>Stock</th><th>Wt</th><th>Health</th><th>Fund</th><th>Tech</th><th>Verdict</th><th>P&L</th><th>Trend</th><th>RSI</th><th>RS 6m</th><th>3y CAGR</th><th>SL</th><th>TP</th></tr>';
-  d.holdings.forEach(e=>{t+=`<tr><td>${e.sym.replace('.NS','').replace('.BO','')}</td><td>${e.weight_pct}%</td><td><b>${e.health}</b></td><td>${e.fund_score}</td><td>${e.tech_score}</td><td class="${vcl(e.verdict)}">${e.verdict}</td><td class="${e.pnl_pct>=0?'pos':'neg'}">${e.pnl_pct==null?'—':(e.pnl_pct>=0?'+':'')+e.pnl_pct+'%'}</td><td>${e.above_200dma?'▲ above 200DMA':'▼ below 200DMA'}</td><td>${e.rsi}</td><td class="${(e.rel_strength_6m||0)>=0?'pos':'neg'}">${e.rel_strength_6m==null?'—':(e.rel_strength_6m>=0?'+':'')+e.rel_strength_6m+'%'}</td><td>${e.earnings_cagr_3y==null?'—':e.earnings_cagr_3y+'%'}</td><td class="neg">${fmt(e.sl)} <span class="muted">(${e.sl_pct}%)</span></td><td class="pos">${fmt(e.tp)} <span class="muted">(+${e.tp_pct}%)</span></td></tr>`;});
-  o.append($(t+'</table><p class="muted">SL/TP from ATR(14); expected 1σ move over your horizon shown via volatility. RS 6m = return vs index. ❤️ Accumulate · Hold · Reduce · Exit.</p></section>'));
+    <div class="chip">Blended earnings CAGR<b>${d.portfolio_earnings_cagr==null?'—':d.portfolio_earnings_cagr+'%'}</b><span class="muted">vs NIFTY ~12%</span></div></div></section>`));
+  // how to rebalance — explicit steps + the situational plan
+  o.append($(`<section class="glass"><h2>🔁 How to rebalance</h2>
+    <ol style="line-height:1.7;padding-left:20px">${(d.steps||[]).map(s=>`<li>${s}</li>`).join('')}</ol>
+    <h3>Right now</h3>${d.plan.map(x=>`<div class="flag ${x.indexOf('⚠')>-1?'f-bad':'f-good'}">${x}</div>`).join('')}</section>`));
+  // per-stock: separate fundamentals + technicals sections
+  let h='<section class="glass"><h2>🔬 Holdings evaluated</h2>';
+  d.holdings.forEach(e=>{const sym=e.sym.replace('.NS','').replace('.BO','');
+    h+=`<div class="chip" style="margin-bottom:12px;background:#0c1426">
+      <div style="display:flex;justify-content:space-between;flex-wrap:wrap;align-items:center">
+        <b style="font-size:16px">${sym} <span class="muted" style="font-weight:400">${e.weight_pct}% of book</span></b>
+        <span>Health <b>${e.health}/10</b> · <span class="verdict ${e.verdict==='Accumulate'?'v-under':(e.verdict==='Exit'||e.verdict==='Reduce')?'v-over':'v-fair'}">${e.verdict}</span> · P&L <span class="${e.pnl_pct>=0?'pos':'neg'}">${e.pnl_pct==null?'—':(e.pnl_pct>=0?'+':'')+e.pnl_pct+'%'}</span></span></div>
+      <div class="grid two" style="margin-top:10px">
+        <div><h3 style="margin-top:0">Fundamentals — ${e.fund_score}/10</h3>
+          <div class="kv">P/E: <b>${fmt(e.pe)}</b></div>
+          <div class="kv">ROE: <b>${e.roe_pct==null?'—':e.roe_pct+'%'}</b></div>
+          <div class="kv">Earnings growth (1y): <b>${e.earnings_growth_pct==null?'—':e.earnings_growth_pct+'%'}</b></div>
+          <div class="kv">Earnings CAGR (3y): <b>${e.earnings_cagr_3y==null?'—':e.earnings_cagr_3y+'%'}</b></div>
+          <div class="kv">Debt/Equity: <b>${e.de==null?'—':e.de+'%'}</b></div></div>
+        <div><h3 style="margin-top:0">Technicals — ${e.tech_score}/10</h3>
+          <div class="kv">Trend: <b>${e.above_200dma?'▲ above 200-DMA':'▼ below 200-DMA'}${e.sma_uptrend?' · 50&gt;200':''}</b></div>
+          <div class="kv">RSI(14): <b>${e.rsi}</b> <span class="muted">${e.rsi<30?'oversold':e.rsi>70?'overbought':'neutral'}</span></div>
+          <div class="kv">Relative strength (6m): <b class="${(e.rel_strength_6m||0)>=0?'pos':'neg'}">${e.rel_strength_6m==null?'—':(e.rel_strength_6m>=0?'+':'')+e.rel_strength_6m+'%'}</b> <span class="muted">vs index</span></div>
+          <div class="kv">ATR(14): <b>${fmt(e.atr)}</b> · 1σ move/horizon ±${e.expected_move_pct}%</div></div></div>
+      <div class="grid two" style="margin-top:6px">
+        <div class="kv">From <b>current ₹${fmt(e.price)}</b>: SL <span class="neg">₹${fmt(e.sl)} (${e.sl_pct}%)</span> · TP <span class="pos">₹${fmt(e.tp)} (+${e.tp_pct}%)</span></div>
+        <div class="kv">From <b>your avg ₹${fmt(e.buy)}</b>: SL <span class="neg">₹${fmt(e.sl_buy)}</span> · TP <span class="pos">₹${fmt(e.tp_buy)}</span></div></div>
+    </div>`;});
+  o.append($(h+'<p class="muted">Each holding scored on its own: fundamentals (60%) + technicals (40%) → health. SL/TP from ATR(14), shown from both the current price and your average buy price.</p></section>'));
   // substitutes
-  if(d.substitutes&&Object.keys(d.substitutes).length){let s='<section class="glass"><h2>🔁 Better substitutes for weak holdings</h2>';
+  if(d.substitutes&&Object.keys(d.substitutes).length){let s='<section class="glass"><h2>🔁 Stronger substitutes</h2>';
     for(const[sym,o2]of Object.entries(d.substitutes)){s+=`<h3>${sym.replace('.NS','')} → stronger ${o2.sector} names</h3><table><tr><th>Candidate</th><th>Quality</th><th>P/E</th><th>ROE%</th><th>6m%</th></tr>`;
       o2.picks.forEach(p=>s+=`<tr><td>${p.name||p.ticker} <span class="muted">${p.ticker.replace('.NS','')}</span></td><td>${p.quality??'—'}</td><td>${fmt(p.pe)}</td><td>${fmt(p.roe)}</td><td>${fmt(p.momentum_6m)}</td></tr>`);s+='</table>';}
     o.append($(s+'<p class="muted">Same-sector names scoring higher on quality than the holding they\'d replace. Confirm before switching.</p></section>'));}
-  // sector mix + rotation
-  let sc='<section class="glass"><h2>🧭 Sector mix, rotation &amp; diversification</h2><div class="grid two"><div><h3>Your sector weights</h3>';
+  // sector mix + rotation + news
+  let sc='<section class="glass"><h2>🧭 Sector mix &amp; rotation</h2><div class="grid two"><div><h3>Your sector weights</h3>';
   sc+=d.sectors.map(s=>`<div class="kv">${s.sector}: <b>${s.pct}%</b>${s.pct>30?' <span class="neg">(concentrated)</span>':''}</div>`).join('');
-  sc+='</div><div><h3>Sector rotation (1-month leaders)</h3>'+d.sector_rotation.slice(0,6).map(r=>`<div class="kv">${r.sector}: ${r.ret_1m_pct>=0?'<span class="pos">+'+r.ret_1m_pct+'%</span>':'<span class="neg">'+r.ret_1m_pct+'%</span>'}</div>`).join('')+'</div></div>';
-  o.append($(sc+`<p class="muted">Largest sector ${d.concentration_pct}% of the book. Rotate trims toward the leading sectors above; keep any single sector under ~30% to stay diversified.</p></section>`));}
+  sc+='</div><div><h3>1-month sector leaders</h3>'+d.sector_rotation.slice(0,6).map(r=>`<div class="kv">${r.sector}: ${r.ret_1m_pct>=0?'<span class="pos">+'+r.ret_1m_pct+'%</span>':'<span class="neg">'+r.ret_1m_pct+'%</span>'}</div>`).join('')+'</div></div>';
+  sc+=`<p class="muted">Largest sector ${d.concentration_pct}% of the book; keep any one under ~30% and rotate trims toward the leaders above.</p>`;
+  if(d.sector_news&&Object.keys(d.sector_news).length){sc+='<h3>What\'s moving your sectors (news that can affect your horizon)</h3>';
+    for(const[sec,news]of Object.entries(d.sector_news)){sc+=`<div style="margin-bottom:8px"><b>${sec}</b>`;
+      sc+=(news&&news.length)?news.map(n=>`<div class="flag ${n.tone=='neg'?'f-bad':n.tone=='pos'?'f-good':''}"><a href="${n.link}" target="_blank">${n.title}</a> <small class="muted">${n.date}</small></div>`).join(''):'<div class="muted">No recent headlines.</div>';sc+='</div>';}}
+  o.append($(sc+'</section>'));}
 
 async function optimizePort(){const p=loadPort();if(p.length<1){el('t-opt-out').innerHTML='<section class="glass">Add holdings first.</section>';return;}
   el('t-opt-out').innerHTML='<div class="spin"></div>';
