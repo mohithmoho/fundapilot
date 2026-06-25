@@ -2364,7 +2364,7 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
     document.getElementById('tfseg').querySelectorAll('button').forEach(x=>x.classList.remove('on'));b.classList.add('on');loadTechnicals(d.ticker,d.currency,b.dataset.tf);});
   loadTechnicals(d.ticker,d.currency,'daily');
 
-  if(d.history&&Object.keys(d.history).length){out.append($('<section class="glass"><h2>Historical statements</h2><canvas id="cH" height="120"></canvas></section>'));drawHist('cH',d.history);}
+  if(d.history&&Object.keys(d.history).length){out.append($('<section class="glass"><h2>Historical statements <span class="muted">— in '+cur+' Crore (Cr) / Lakh (L)</span></h2><canvas id="cH" height="120"></canvas></section>'));drawHist('cH',d.history,cur);}
 
   let st='<section class="glass"><h2>Investor-style fit</h2><div class="grid two">';
   for(const[n,o]of Object.entries(d.styles_fit)){st+=`<div class="chip"><b>${n}</b> <span class="muted">— ${o.fit_pct}% fit</span><div style="margin-top:6px">`;
@@ -2430,8 +2430,11 @@ function tf(label,t){if(!t)return `<div class="chip"><b>${label}</b><div class="
   const r=t.rsi,zone=r==null?'—':r<30?'Oversold 🟢':r>70?'Overbought 🔴':'Neutral 🟡';
   return `<div class="chip"><b>${label}</b><div>RSI(14): <b>${r??'—'}</b> <span class="muted">${zone}</span></div><div>Trend: <b>${t.above_ema?'Above EMA200 ▲':'Below EMA200 ▼'}</b></div><div class="muted">EMA200 ${t.ema200}</div></div>`;}
 function drawLine(id,t){if(!t)return;charts.push(new Chart(el(id),{type:'line',data:{labels:t.dates,datasets:[{label:'Price',data:t.series,borderColor:'#6ea8fe',borderWidth:1.5,pointRadius:0,tension:.2},{label:'EMA200',data:t.dates.map(()=>t.ema200),borderColor:'#ffd166',borderWidth:1,pointRadius:0,borderDash:[5,4]}]},options:{plugins:{legend:{labels:{color:'#8b97ad'}}},scales:{x:{ticks:{color:'#8b97ad',maxTicksLimit:6}},y:{ticks:{color:'#8b97ad'}}}}}));}
-function drawHist(id,h){const keys=Object.keys(h),labels=Object.keys(h[keys[0]]).reverse(),col={'Revenue':'#6ea8fe','EBITDA':'#b39bff','Net Income':'#39d98a'};
-  charts.push(new Chart(el(id),{type:'bar',data:{labels,datasets:keys.map(k=>({label:k,data:labels.map(l=>h[k][l]),backgroundColor:col[k]||'#888'}))},options:{plugins:{legend:{labels:{color:'#8b97ad'}}},scales:{x:{ticks:{color:'#8b97ad'}},y:{ticks:{color:'#8b97ad'}}}}}));}
+function drawHist(id,h,cur){cur=cur||'₹';const keys=Object.keys(h),labels=Object.keys(h[keys[0]]).reverse(),col={'Revenue':'#6ea8fe','EBITDA':'#b39bff','Net Income':'#39d98a'};
+  // values are raw (full currency units). Show axis & tooltips in Cr/L via fmt() so they're readable.
+  charts.push(new Chart(el(id),{type:'bar',data:{labels,datasets:keys.map(k=>({label:k,data:labels.map(l=>h[k][l]),backgroundColor:col[k]||'#888'}))},
+    options:{plugins:{legend:{labels:{color:'#8b97ad'}},tooltip:{callbacks:{label:ctx=>ctx.dataset.label+': '+cur+fmt(ctx.parsed.y)}}},
+      scales:{x:{ticks:{color:'#8b97ad'}},y:{ticks:{color:'#8b97ad',callback:v=>cur+fmt(v)}}}}}));}
 
 async function loadIndustryPE(ticker,sector){const box=el('indpe');if(!box)return;
   try{const d=await(await fetch(`/industry_pe?ticker=${encodeURIComponent(ticker)}&market=Global&sector=${encodeURIComponent(sector||'')}`)).json();
