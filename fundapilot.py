@@ -841,6 +841,17 @@ def recommendation(overall, verdict, tech, style_take, weight):
     return f"If I were you: {act}. The {trend}, overall quality is {overall}/10 ({style_take.lower()} for your style). Cap it at ~{weight}% of capital."
 
 
+def _style_cat(key):
+    """Map an expanded scorecard key to the broad category a style weights (keeps style scoring working)."""
+    k = key.lower()
+    if "p/e" in k: return "Valuation (P/E)"
+    if "valuation" in k or "p/b" in k or "peg" in k: return "Valuation"
+    if "roe" in k or "margin" in k or "profit" in k or "cash" in k: return "Profitability"
+    if "growth" in k: return "Growth"
+    if "momentum" in k: return "Momentum"
+    return "Financial health"
+
+
 def analyze(ticker, horizon, risk, capital, years, style):
     t, info, cur_code, sym, price, hist, tech, inst_pct, holders, actions, notes = fetch(ticker, years)
     rp = RISK[risk]
@@ -859,27 +870,70 @@ def analyze(ticker, horizon, risk, capital, years, style):
     peg = _g(info, "pegRatio")
     if peg is None and pe and earn_g and earn_g > 0:
         peg = round(pe / (earn_g * 100), 2)
+    rev_ttm = _g(info, "totalRevenue")
+    ebitda_margin = (ebitda / rev_ttm) if (ebitda and rev_ttm) else None
 
     fcf, fcf_src, fcf_detail = derive_fcf(info, t)
     g = max(0.03, min(0.18, (earn_g or rev_g or 0.08)))
     fair = dcf(fcf, g, rp["discount"], proj_years)
     implied_g = reverse_dcf(fcf, mktcap, rp["discount"], proj_years)
-    verdict, mos = "Insufficient data", None
+    dcf_verdict, mos = "Insufficient data", None
     if fair and mktcap:
         mos = round((fair / mktcap - 1) * 100, 1)
-        verdict = "Undervalued" if mos > 20 else ("Overvalued" if mos < -20 else "Fairly valued")
+        dcf_verdict = "Undervalued" if mos > 20 else ("Overvalued" if mos < -20 else "Fairly valued")
 
-    scores = {"Valuation": score(mos, 30, -30) if mos is not None else None,
-              "Profitability": score((roe or 0) * 100, 22, 5) if roe is not None else None,
-              "Growth": score((earn_g or rev_g or 0) * 100, 20, 0) if (earn_g or rev_g) is not None else None,
-              "Financial health": score(de, 30, 150) if de is not None else None,
-              "Momentum": _momentum(tech),
-              "Valuation (P/E)": score(pe, 12, 45) if pe else None}
+    # --- growth-adjusted valuation: what P/E is justified by growth + quality (investors pay up for the future) ---
+    gr = (earn_g if earn_g is not None else rev_g)
+    gr_pct = round(gr * 100, 1) if gr is not None else None
+    fair_pe = None
+    if gr_pct is not None:
+        fair_pe = 8 + 0.9 * max(gr_pct, 0)            # Lynch-style: base + growth premium (PEG≈1 anchor)
+        if roe and roe > 0.18: fair_pe *= 1.10        # quality earns a premium
+        if de is not None and de < 40: fair_pe *= 1.05
+        fair_pe = round(min(fair_pe, 60), 1)
+    pe_growth_verdict, pe_gap = None, None
+    if pe and fair_pe:
+        pe_gap = round((fair_pe / pe - 1) * 100, 1)   # +ve = market paying less than growth justifies
+        pe_growth_verdict = "Undervalued vs growth" if pe_gap > 15 else ("Overvalued vs growth" if pe_gap < -15 else "Fairly priced vs growth")
+
+    # --- combined verdict: blends DCF + growth-adjusted P/E + PEG (not just P/E & P/B) ---
+    votes, reasons = 0, []
+    if mos is not None:
+        votes += 1 if mos > 20 else (-1 if mos < -20 else 0)
+        reasons.append(f"DCF {('cheap' if mos>20 else 'rich' if mos<-20 else 'fair')} ({mos:+.0f}% vs price)")
+    if pe_gap is not None:
+        votes += 1 if pe_gap > 15 else (-1 if pe_gap < -15 else 0)
+        reasons.append(f"P/E {pe:.0f} vs growth-fair {fair_pe:.0f}")
+    if peg is not None:
+        votes += 1 if peg < 1 else (-1 if peg > 2 else 0)
+        reasons.append(f"PEG {peg:.2f}")
+    verdict = "Undervalued" if votes >= 1 else ("Overvalued" if votes <= -1 else "Fairly valued")
+    if mos is None and pe_gap is None and peg is None:
+        verdict = "Insufficient data"
+
+    scores = {
+        "Valuation (DCF)": score(mos, 30, -30) if mos is not None else None,
+        "Valuation (P/E)": score(pe, 12, 45) if pe else None,
+        "Valuation (P/B)": score(pb, 1, 8) if pb else None,
+        "Valuation (PEG)": score(peg, 1, 3) if peg else None,
+        "Growth-adjusted P/E": score(pe_gap, 25, -25) if pe_gap is not None else None,
+        "Profitability (ROE)": score((roe or 0) * 100, 22, 5) if roe is not None else None,
+        "Operating margin": score((opm or 0) * 100, 20, 5) if opm is not None else None,
+        "Net / PAT margin": score((npm or 0) * 100, 15, 2) if npm is not None else None,
+        "EBITDA margin": score((ebitda_margin or 0) * 100, 22, 6) if ebitda_margin is not None else None,
+        "Revenue growth": score((rev_g or 0) * 100, 18, 0) if rev_g is not None else None,
+        "Earnings growth": score((earn_g or 0) * 100, 20, 0) if earn_g is not None else None,
+        "Financial health (D/E)": score(de, 30, 150) if de is not None else None,
+        "Liquidity (current ratio)": score(cur_ratio, 2, 0.8) if cur_ratio is not None else None,
+        "Cash flow (FCF)": (8.0 if (fcf and fcf > 0) else 2.0) if fcf is not None else None,
+        "Dividend": score((div_y or 0) * 100, 3, 0) if div_y is not None else None,
+        "Momentum / trend": _momentum(tech),
+    }
     valid = {k: v for k, v in scores.items() if v is not None}
     overall = round(sum(valid.values()) / len(valid), 1) if valid else None
     w = STYLE_WEIGHTS.get(style, STYLE_WEIGHTS["balanced"])
-    wsum = sum(w[k] for k in valid)
-    style_score = round(sum(valid[k] * w[k] for k in valid) / wsum, 1) if wsum else overall
+    wsum = sum(w.get(_style_cat(k), 1) for k in valid)
+    style_score = round(sum(valid[k] * w.get(_style_cat(k), 1) for k in valid) / wsum, 1) if wsum else overall
     style_take = "Strong fit" if (style_score or 0) >= 7 else ("Moderate fit" if (style_score or 0) >= 5 else "Weak fit")
 
     mktcap_inr = mktcap * fx if (mktcap and fx) else None
@@ -934,8 +988,13 @@ def analyze(ticker, horizon, risk, capital, years, style):
             "style": {"id": style, "label": STYLE_LABEL.get(style, style), "score": style_score, "take": style_take},
             "styles_fit": _styles_fit(roe, de, pe, pb, peg, earn_g, rev_g, fcf, div_y, beta, opm),
             "valuation": {"fair_value_mktcap": fair, "current_mktcap": mktcap, "margin_of_safety_pct": mos,
-                          "verdict": verdict, "growth_used_pct": round(g * 100, 1), "discount_pct": round(rp["discount"] * 100, 1),
-                          "implied_growth_pct": implied_g, "proj_years": proj_years, "fcf": fcf, "fcf_source": fcf_src},
+                          "verdict": verdict, "dcf_verdict": dcf_verdict, "growth_used_pct": round(g * 100, 1),
+                          "discount_pct": round(rp["discount"] * 100, 1), "implied_growth_pct": implied_g,
+                          "proj_years": proj_years, "fcf": fcf, "fcf_source": fcf_src,
+                          "growth_pct": gr_pct, "fair_pe": fair_pe, "current_pe": pe, "pe_gap_pct": pe_gap,
+                          "pe_growth_verdict": pe_growth_verdict, "peg": peg,
+                          "combined_reason": " · ".join(reasons),
+                          "method_note": "Combined verdict blends DCF, growth-adjusted fair P/E and PEG — not just P/E & P/B. A high P/E can still be 'fair' if growth/quality justify paying up for the future."},
             "history": hist, "technical": tech,
             "institutional": {"pct": inst_pct, "holders": holders,
                               "note": "Total institutional % from Yahoo. FII vs DII split → NSE shareholding pattern (linked below)."},
@@ -1003,6 +1062,227 @@ def _flags(roe, de, fcf, rev_g, earn_g, pe, pb, npm, cur_ratio, news, tech, mos)
     d = tech.get("daily")
     if d and d.get("rsi") and d["rsi"] > 75: r.append(f"Daily RSI {d['rsi']:.0f} (overbought)")
     return g[:5], r[:5]
+
+
+# ---------------------------- CMT-style technical engine ----------------------------
+def _adx(high, low, close, n=14):
+    up, down = high.diff(), -low.diff()
+    plus_dm = pd.Series(np.where((up > down) & (up > 0), up, 0.0), index=high.index)
+    minus_dm = pd.Series(np.where((down > up) & (down > 0), down, 0.0), index=high.index)
+    tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1 / n, adjust=False).mean()
+    plus_di = 100 * plus_dm.ewm(alpha=1 / n, adjust=False).mean() / atr
+    minus_di = 100 * minus_dm.ewm(alpha=1 / n, adjust=False).mean() / atr
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    return dx.ewm(alpha=1 / n, adjust=False).mean(), plus_di, minus_di, atr
+
+
+def _swings(arr, order=4):
+    hi, lo = [], []
+    for i in range(order, len(arr) - order):
+        w = arr[i - order:i + order + 1]
+        if arr[i] == w.max(): hi.append(i)
+        if arr[i] == w.min(): lo.append(i)
+    return hi, lo
+
+
+def _slope(idx, vals):
+    if len(idx) < 2:
+        return 0.0
+    m = np.polyfit(idx, vals, 1)[0]
+    return float(m / (np.mean(vals) or 1))  # normalized per-bar slope
+
+
+def detect_patterns(o, h, l, c):
+    """Heuristic but rule-based pattern detection. Returns list of {name,bias,confidence,detail,points}.
+    points are indices into the series (for charting). Conservative — only flags when criteria met."""
+    out = []
+    n = len(c)
+    if n < 30:
+        return out
+    body = abs(c - o)
+    rng = (h - l).replace(0, np.nan)
+    up5 = c.iloc[-1] / c.iloc[-6] - 1 if n > 6 else 0
+    # --- candlesticks (last 1-2 bars) ---
+    o1, c1, h1, l1 = o.iloc[-1], c.iloc[-1], h.iloc[-1], l.iloc[-1]
+    o2, c2 = o.iloc[-2], c.iloc[-2]
+    b1 = abs(c1 - o1)
+    if c2 < o2 and c1 > o1 and c1 >= o2 and o1 <= c2:
+        out.append({"name": "Bullish Engulfing", "bias": "bullish", "confidence": "medium", "points": [n - 2, n - 1],
+                    "detail": "Today's green candle fully engulfs yesterday's red body — buyers took control."})
+    if c2 > o2 and c1 < o1 and c1 <= o2 and o1 >= c2:
+        out.append({"name": "Bearish Engulfing", "bias": "bearish", "confidence": "medium", "points": [n - 2, n - 1],
+                    "detail": "Today's red candle engulfs yesterday's green body — sellers took control."})
+    low_sh, up_sh = min(o1, c1) - l1, h1 - max(o1, c1)
+    if b1 > 0 and low_sh > 2 * b1 and up_sh < b1 and up5 < 0:
+        out.append({"name": "Hammer", "bias": "bullish", "confidence": "low", "points": [n - 1],
+                    "detail": "Long lower wick after a fall — buyers rejected lower prices (reversal hint)."})
+    if b1 > 0 and up_sh > 2 * b1 and low_sh < b1 and up5 > 0:
+        out.append({"name": "Shooting Star", "bias": "bearish", "confidence": "low", "points": [n - 1],
+                    "detail": "Long upper wick after a rise — sellers rejected higher prices."})
+    # --- SMA50/200 cross ---
+    sma50, sma200 = c.rolling(50).mean(), c.rolling(200).mean()
+    if n > 205 and not (pd.isna(sma200.iloc[-2]) or pd.isna(sma200.iloc[-1])):
+        if sma50.iloc[-2] <= sma200.iloc[-2] and sma50.iloc[-1] > sma200.iloc[-1]:
+            out.append({"name": "Golden Cross", "bias": "bullish", "confidence": "high", "points": [n - 1],
+                        "detail": "50-day average crossed above the 200-day — classic long-term uptrend signal."})
+        if sma50.iloc[-2] >= sma200.iloc[-2] and sma50.iloc[-1] < sma200.iloc[-1]:
+            out.append({"name": "Death Cross", "bias": "bearish", "confidence": "high", "points": [n - 1],
+                        "detail": "50-day average crossed below the 200-day — classic downtrend warning."})
+    # --- swing-based chart patterns (last ~80 bars) ---
+    seg = min(n, 80)
+    cc = c.iloc[-seg:].values
+    base = n - seg
+    hi, lo = _swings(cc, order=4)
+    ph = [(i, cc[i]) for i in hi]
+    pl = [(i, cc[i]) for i in lo]
+    last = cc[-1]
+    if len(ph) >= 2:
+        (i1, p1), (i2, p2) = ph[-2], ph[-1]
+        trough = min(cc[i1:i2]) if i2 > i1 else None
+        if abs(p1 - p2) / p1 < 0.04 and trough and (min(p1, p2) - trough) / min(p1, p2) > 0.03:
+            conf = "medium" if last < trough else "low"
+            out.append({"name": "Double Top", "bias": "bearish", "confidence": conf,
+                        "points": [base + i1, base + i2], "neckline": float(trough),
+                        "detail": "Two peaks at a similar level — a break below the middle trough confirms the top." +
+                                  (" Confirmed (price below neckline)." if last < trough else " Forming — watch the neckline.")})
+    if len(pl) >= 2:
+        (i1, p1), (i2, p2) = pl[-2], pl[-1]
+        peak = max(cc[i1:i2]) if i2 > i1 else None
+        if abs(p1 - p2) / p1 < 0.04 and peak and (peak - max(p1, p2)) / peak > 0.03:
+            conf = "medium" if last > peak else "low"
+            out.append({"name": "Double Bottom", "bias": "bullish", "confidence": conf,
+                        "points": [base + i1, base + i2], "neckline": float(peak),
+                        "detail": "Two troughs at a similar level — a break above the middle peak confirms the bottom." +
+                                  (" Confirmed (price above neckline)." if last > peak else " Forming — watch the neckline.")})
+    if len(ph) >= 3:
+        (ia, a), (ib, b), (ic, cP) = ph[-3], ph[-2], ph[-1]
+        if b > a and b > cP and abs(a - cP) / a < 0.05 and (b - max(a, cP)) / b > 0.03:
+            out.append({"name": "Head & Shoulders", "bias": "bearish", "confidence": "medium",
+                        "points": [base + ia, base + ib, base + ic],
+                        "detail": "Three peaks, the middle (head) highest with two even shoulders — a topping pattern."})
+    if len(pl) >= 3:
+        (ia, a), (ib, b), (ic, cP) = pl[-3], pl[-2], pl[-1]
+        if b < a and b < cP and abs(a - cP) / a < 0.05 and (min(a, cP) - b) / min(a, cP) > 0.03:
+            out.append({"name": "Inverse Head & Shoulders", "bias": "bullish", "confidence": "medium",
+                        "points": [base + ia, base + ib, base + ic],
+                        "detail": "Three troughs, the middle (head) lowest with even shoulders — a bottoming pattern."})
+    # --- triangles / wedges from swing-line slopes ---
+    if len(ph) >= 3 and len(pl) >= 3:
+        sh = _slope([i for i, _ in ph[-3:]], [p for _, p in ph[-3:]])
+        sl = _slope([i for i, _ in pl[-3:]], [p for _, p in pl[-3:]])
+        flat = 0.001
+        if sh < -flat and sl > flat:
+            out.append({"name": "Symmetric Triangle", "bias": "neutral", "confidence": "low", "points": [],
+                        "detail": "Lower highs and higher lows converging — energy building; trade the breakout direction."})
+        elif abs(sh) <= flat and sl > flat:
+            out.append({"name": "Ascending Triangle", "bias": "bullish", "confidence": "low", "points": [],
+                        "detail": "Flat highs with rising lows — buyers pressing; usually breaks upward."})
+        elif sh < -flat and abs(sl) <= flat:
+            out.append({"name": "Descending Triangle", "bias": "bearish", "confidence": "low", "points": [],
+                        "detail": "Falling highs with flat lows — sellers pressing; usually breaks downward."})
+        elif sh > flat and sl > flat and sl > sh:
+            out.append({"name": "Rising Wedge", "bias": "bearish", "confidence": "low", "points": [],
+                        "detail": "Both lines rising but converging — momentum fading; often resolves down."})
+        elif sh < -flat and sl < -flat and sh > sl:
+            out.append({"name": "Falling Wedge", "bias": "bullish", "confidence": "low", "points": [],
+                        "detail": "Both lines falling but converging — selling exhausting; often resolves up."})
+    return out
+
+
+def technical_analysis(ticker, tf="daily"):
+    t = yf.Ticker(ticker)
+    period, interval = ("2y", "1d") if tf == "daily" else ("6y", "1wk")
+    df = t.history(period=period, interval=interval).dropna()
+    if len(df) < 60:
+        return {"error": "Not enough price history for technical analysis."}
+    o, h, l, c, v = df["Open"], df["High"], df["Low"], df["Close"], df["Volume"]
+    last = float(c.iloc[-1])
+
+    def lastf(s, nd=2):
+        x = s.iloc[-1]
+        return None if pd.isna(x) else round(float(x), nd)
+
+    rsi14 = lastf(rsi(c))
+    ema12, ema26 = c.ewm(span=12, adjust=False).mean(), c.ewm(span=26, adjust=False).mean()
+    macd = ema12 - ema26
+    signal = macd.ewm(span=9, adjust=False).mean()
+    hist_macd = macd - signal
+    mid = c.rolling(20).mean(); sd = c.rolling(20).std()
+    bb_up, bb_lo = mid + 2 * sd, mid - 2 * sd
+    pctb = lastf((c - bb_lo) / (bb_up - bb_lo).replace(0, np.nan), 2)
+    lk, hk = l.rolling(14).min(), h.rolling(14).max()
+    k = 100 * (c - lk) / (hk - lk).replace(0, np.nan)
+    d_st = k.rolling(3).mean()
+    adx, pdi, mdi = _adx(h, l, c)[0:3]
+    roc = lastf(c.pct_change(10) * 100, 1)
+    obv = (np.sign(c.diff()).fillna(0) * v).cumsum()
+    obv_slope = "rising" if obv.iloc[-1] > obv.iloc[-10] else "falling"
+    sma50, sma200 = lastf(c.rolling(50).mean()), lastf(c.rolling(200).mean())
+    atr = lastf(_adx(h, l, c)[3])
+
+    def sig(cond_bull, cond_bear, bull="Bullish", bear="Bearish", neut="Neutral"):
+        return bull if cond_bull else (bear if cond_bear else neut)
+
+    indicators = {
+        "RSI (14)": {"value": rsi14, "signal": sig(rsi14 is not None and rsi14 < 30, rsi14 is not None and rsi14 > 70, "Oversold (bullish)", "Overbought (bearish)"),
+                     "use": "Momentum oscillator. <30 oversold (bounce odds), >70 overbought (pullback odds)."},
+        "MACD": {"value": lastf(macd), "signal_line": lastf(signal), "hist": lastf(hist_macd),
+                 "signal": sig(macd.iloc[-1] > signal.iloc[-1], macd.iloc[-1] < signal.iloc[-1]),
+                 "use": "Trend+momentum. MACD above its signal line = bullish; histogram shows momentum strength."},
+        "Stochastic %K/%D": {"value": lastf(k), "d": lastf(d_st),
+                             "signal": sig(k.iloc[-1] < 20, k.iloc[-1] > 80, "Oversold", "Overbought"),
+                             "use": "Where price sits in its recent range. <20 oversold, >80 overbought."},
+        "ADX (14)": {"value": lastf(adx), "plus_di": lastf(pdi), "minus_di": lastf(mdi),
+                     "signal": ("Strong trend" if (adx.iloc[-1] or 0) > 25 else "Weak/!trend") + (" up" if pdi.iloc[-1] > mdi.iloc[-1] else " down"),
+                     "use": "Trend STRENGTH (not direction). >25 = trending; +DI vs −DI shows which side."},
+        "Bollinger %B": {"value": pctb, "signal": sig(pctb is not None and pctb < 0.05, pctb is not None and pctb > 0.95, "At lower band", "At upper band"),
+                         "use": "Position within volatility bands. Near 0 = lower band (cheap), near 1 = upper band (stretched)."},
+        "Momentum / ROC (10)": {"value": roc, "signal": sig((roc or 0) > 0, (roc or 0) < 0, "Positive", "Negative"),
+                                "use": "10-bar rate of change. Positive = upward momentum."},
+        "OBV": {"value": obv_slope, "signal": "Bullish" if obv_slope == "rising" else "Bearish",
+                "use": "On-Balance Volume — is volume confirming price? Rising OBV backs an uptrend."},
+        "ATR (14)": {"value": atr, "signal": "Volatility", "use": "Average True Range — typical bar size; size stops/positions off it."},
+        "SMA 50 / 200": {"value": sma50, "sma200": sma200, "signal": sig(sma50 and sma200 and sma50 > sma200, sma50 and sma200 and sma50 < sma200, "Uptrend (50>200)", "Downtrend (50<200)"),
+                         "use": "Trend backbone. Price & 50-day above 200-day = healthy long-term uptrend."},
+    }
+    patterns = detect_patterns(o, h, l, c)
+    tailN = 140
+    chart = {"dates": [str(d.date()) for d in c.tail(tailN).index],
+             "close": [round(float(x), 2) for x in c.tail(tailN)],
+             "sma50": [None if pd.isna(x) else round(float(x), 2) for x in c.rolling(50).mean().tail(tailN)],
+             "sma200": [None if pd.isna(x) else round(float(x), 2) for x in c.rolling(200).mean().tail(tailN)],
+             "bb_up": [None if pd.isna(x) else round(float(x), 2) for x in bb_up.tail(tailN)],
+             "bb_lo": [None if pd.isna(x) else round(float(x), 2) for x in bb_lo.tail(tailN)],
+             "base": len(c) - min(len(c), tailN)}  # to map pattern indices into the tail
+    # net read
+    bull = sum(1 for v in indicators.values() if "ullish" in v["signal"] or "Oversold" in v["signal"] or "Uptrend" in v["signal"] or "Positive" in v["signal"] or "up" in v["signal"])
+    bear = sum(1 for v in indicators.values() if "earish" in v["signal"] or "Overbought" in v["signal"] or "Downtrend" in v["signal"] or "Negative" in v["signal"] or "down" in v["signal"])
+    bias = "Bullish" if bull > bear + 1 else ("Bearish" if bear > bull + 1 else "Mixed / Neutral")
+    return {"tf": tf, "price": last, "indicators": indicators, "patterns": patterns,
+            "chart": chart, "net_bias": bias, "bull_count": bull, "bear_count": bear,
+            "note": "CMT-style indicators + rule-based pattern detection. Patterns are heuristics to confirm visually, not guarantees."}
+
+
+def industry_pe(ticker, sector):
+    """Median P/E of local (Indian) sector peers vs the mapped global (US) sector — connects micro to macro."""
+    GLOBAL_MAP = {"Defense": "Defense", "IT / Software": "Technology", "Banking": "Finance", "Pharma": "Healthcare",
+                  "Auto": "EV / Auto", "Energy / Power": "Technology", "Metals": "Semiconductors", "FMCG": "Healthcare"}
+    local_peers, sec_name = find_peers(ticker, sector)
+    def median_pe(syms):
+        pes = []
+        for s in syms[:6]:
+            pe = _g(get_info(s), "trailingPE")
+            if pe and 0 < pe < 200:
+                pes.append(pe)
+        return round(float(np.median(pes)), 1) if pes else None, len(pes)
+    local_med, ln = median_pe(local_peers)
+    g_sector = GLOBAL_MAP.get(sec_name)
+    g_syms = UNIVERSE["USA"].get(g_sector, []) if g_sector else []
+    global_med, gn = median_pe(g_syms)
+    return {"local_sector": sec_name, "local_industry_pe": local_med, "local_n": ln,
+            "global_sector": g_sector, "global_industry_pe": global_med, "global_n": gn,
+            "note": "Median trailing P/E of sector peers. Local vs global shows whether the whole industry is re-rated worldwide."}
 
 
 # ---------------------------- routes ----------------------------
@@ -1128,6 +1408,33 @@ def dashboard():
                   "sector_rotation": rot, "fred": fred_latest(), "watchlists": list(WATCHLISTS.keys())})
 
 
+@app.route("/technicals")
+def technicals():
+    sym = (request.args.get("ticker") or "").strip().upper()
+    market = request.args.get("market", "NSE")
+    tf = request.args.get("tf", "daily")
+    if market in ("NSE", "BSE") and not sym.endswith((".NS", ".BO")):
+        sym += ".NS" if market == "NSE" else ".BO"
+    if not sym:
+        return jresp({"error": "No ticker."}, 400)
+    try:
+        return jresp(technical_analysis(sym, tf if tf in ("daily", "weekly") else "daily"))
+    except Exception as e:
+        return jresp({"error": f"Technicals failed: {e}"}, 500)
+
+
+@app.route("/industry_pe")
+def industry_pe_route():
+    sym = (request.args.get("ticker") or "").strip().upper()
+    market = request.args.get("market", "NSE")
+    if market in ("NSE", "BSE") and not sym.endswith((".NS", ".BO")):
+        sym += ".NS" if market == "NSE" else ".BO"
+    try:
+        return jresp(industry_pe(sym, request.args.get("sector")))
+    except Exception as e:
+        return jresp({"error": str(e)}, 500)
+
+
 @app.route("/analyze", methods=["POST"])
 def do_analyze():
     d = request.get_json(force=True)
@@ -1182,6 +1489,20 @@ def _selftest():
         assert len(r["backtest"]["portfolio"]) > 0 and r["correlation"]["matrix"]["A.NS"]["A.NS"] == 1.0
     finally:
         glob["_closes"] = orig
+    # technicals math + pattern detection (synthetic, no network)
+    base = pd.Series(np.linspace(100, 110, 60))
+    o, c = base.copy(), base + 0.5
+    o.iloc[-2], c.iloc[-2] = 110.0, 108.0      # red bar
+    o.iloc[-1], c.iloc[-1] = 107.5, 111.0      # green bar engulfing the red
+    h = pd.concat([o, c], axis=1).max(axis=1) + 0.5
+    lo2 = pd.concat([o, c], axis=1).min(axis=1) - 0.5
+    pats = detect_patterns(o, h, lo2, c)
+    assert any("Bullish Engulfing" == p["name"] for p in pats), "engulfing not detected"
+    adxv, pdi, mdi, atrv = _adx(h, lo2, c)
+    assert adxv.iloc[-1] >= 0 and atrv.iloc[-1] > 0
+    hi, lows = _swings(np.array([1, 3, 2, 5, 1, 4, 0]), order=1)
+    assert 3 in hi and 4 in lows
+    assert _style_cat("Earnings growth") == "Growth" and _style_cat("Valuation (P/E)") == "Valuation (P/E)"
     print("selftest OK")
 
 
@@ -1218,6 +1539,10 @@ table{width:100%;border-collapse:collapse;font-size:14px}td,th{padding:8px 6px;b
 details summary{cursor:pointer;color:var(--mut);font-size:13px}.disc{font-size:11px;color:var(--mut);text-align:center;padding:20px}
 .kv{margin:6px 0}.kv b{color:var(--txt)}.rec{font-size:16px;line-height:1.6;padding:14px;border-radius:12px;background:linear-gradient(90deg,rgba(110,168,254,.12),rgba(179,155,255,.12));border:1px solid var(--line)}
 .news{max-height:320px;overflow:auto}.pos{color:var(--good)}.neg{color:var(--bad)}
+.tip{border-bottom:1px dotted var(--mut);cursor:help}
+.tip:hover::after{content:attr(data-tip);position:absolute;left:auto;margin-top:18px;margin-left:-8px;z-index:30;max-width:260px;background:#0e1422;border:1px solid var(--acc);border-radius:8px;padding:9px 11px;font-size:12px;font-weight:400;line-height:1.45;color:var(--txt);white-space:normal;box-shadow:0 8px 24px rgba(0,0,0,.5)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}.seg button{background:#0e1422;color:var(--mut);border:0;padding:8px 16px;font-weight:600;border-radius:0}.seg button.on{background:linear-gradient(90deg,#7db4ff,#b39bff);color:#06122a}
+.dl{background:#0e1422;color:var(--acc);border:1px solid var(--line);padding:9px 13px;border-radius:10px;font-size:13px;margin:3px}
 /* mobile: let wide tables scroll inside their card instead of being clipped (desktop unchanged) */
 @media(max-width:680px){
   .wrap{padding:10px}section{padding:14px}h1{font-size:24px}
@@ -1327,7 +1652,48 @@ el('go').onclick=async()=>{let ticker,market;
 
 function vcls(v){return v=='Undervalued'?'v-under':v=='Overvalued'?'v-over':'v-fair'}
 function money(cur,v,inr){if(v==null)return '—';let s=cur+fmt(v);if(inr!=null&&cur!=='₹')s+=` <span class="muted">(₹${fmt(inr)})</span>`;return s;}
-function render(d){const cur=d.currency;out.innerHTML='';
+const GLOSSARY={
+"P/E (trailing)":"Price ÷ earnings per share. How many ₹ you pay for ₹1 of yearly profit. Lower = cheaper; compare within the sector.",
+"P/E (forward)":"Same as P/E but on next year's expected profit.",
+"P/B":"Price ÷ book value (net assets). Below ~1 can mean cheap-on-assets; banks/finance are read on P/B.",
+"PEG":"P/E ÷ growth rate. ~1 means price and growth are balanced; <1 cheap for the growth, >2 expensive.",
+"ROE %":"Return on equity = profit ÷ shareholders' money. >15% is efficient. Buffett's favourite quality gauge.",
+"Operating margin %":"Profit from core operations per ₹100 of sales. Higher = pricing power / efficiency.",
+"Net / PAT margin":"Final profit kept per ₹100 of sales after everything.",
+"EBITDA margin":"Profit before interest, tax, depreciation per ₹100 sales — compares operating profitability across companies.",
+"Debt/Equity %":"Borrowed money vs own capital. Below 60% is comfortable; high debt adds risk in downturns.",
+"Current ratio":"Short-term assets ÷ short-term dues. Above 1 means it can pay near-term bills.",
+"Beta":"How much the stock swings vs the market. 1 = moves with market, <1 calmer, >1 more volatile. Use it to size risk.",
+"Free cash flow":"Cash left after running and investing in the business — what truly funds dividends/buybacks/growth.",
+"Dividend yield %":"Annual dividend ÷ price. Your cash income rate from holding it.",
+"Revenue growth":"How fast sales grow year-on-year.","Earnings growth":"How fast profit grows year-on-year.",
+"RSI (14)":"Momentum 0–100. <30 oversold (bounce odds), >70 overbought (pullback odds). Confirm with trend.",
+"MACD":"Two moving averages' gap vs its signal line. Above signal = bullish momentum; histogram shows strength.",
+"ADX (14)":"Trend STRENGTH (not direction). >25 = a real trend; pair with +DI/−DI for the side.",
+"Stochastic %K/%D":"Where price sits in its recent range. <20 oversold, >80 overbought.",
+"Bollinger %B":"Position inside volatility bands. ~0 at lower band (stretched down), ~1 at upper band (stretched up).",
+"Momentum / ROC (10)":"Rate of change over 10 bars. Positive = upward momentum.",
+"OBV":"On-Balance Volume — adds volume on up days, subtracts on down. Rising OBV confirms an uptrend.",
+"ATR (14)":"Average True Range — typical bar size (volatility). Set stops/position size off it.",
+"SMA 50 / 200":"50- and 200-day averages. Price above both, 50 above 200 = healthy long-term uptrend.",
+"Sharpe ratio":"Return per unit of total risk. >1 good, >2 excellent.","Sortino ratio":"Like Sharpe but counts only downside risk.",
+"Alpha (vs ^NSEI)":"Return above what beta predicts — skill vs the index.","Portfolio beta":"Your whole book's sensitivity to the market.",
+"1-day VaR (95%)":"A typical bad-day loss — exceeded about 1 day in 20.","CVaR / Exp. Shortfall":"Average loss on the worst 5% of days (worse than VaR).",
+"Max drawdown":"Worst peak-to-trough drop — the deepest pain you'd have sat through.","Golden Cross":"50-day average crosses above the 200-day — classic long-term bullish signal.","Death Cross":"50-day crosses below 200-day — long-term bearish warning."};
+function tip(term){const g=GLOSSARY[term];return g?`<span class="tip" data-tip="${g.replace(/"/g,'&quot;')}">${term}</span>`:term;}
+function csvCell(x){x=(x==null?'':String(x));return /[",\n]/.test(x)?'"'+x.replace(/"/g,'""')+'"':x;}
+function dl(name,rows){const csv=rows.map(r=>r.map(csvCell).join(',')).join('\n');const b=new Blob([csv],{type:'text/csv'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=name;a.click();}
+function dlFundamental(){const d=window.LAST;if(!d)return;const r=[['FundaPilot — Fundamental analysis',d.name,d.ticker],[],['Metric','Value','Benchmark']];
+  for(const[k,o]of Object.entries(d.ratios))r.push([k,o.value,o.bench||'']);
+  r.push([],['Scorecard (/10)','Score']);for(const[k,v]of Object.entries(d.scores))if(v!=null)r.push([k,v]);
+  r.push([],['Valuation','']);const v=d.valuation;[['Combined verdict',v.verdict],['DCF verdict',v.dcf_verdict],['DCF fair value (mkt cap)',v.fair_value_mktcap],['Margin of safety %',v.margin_of_safety_pct],['Growth %',v.growth_pct],['Fair P/E (growth-adjusted)',v.fair_pe],['Current P/E',v.current_pe],['PEG',v.peg],['Reverse-DCF implied growth %',v.implied_growth_pct]].forEach(x=>r.push(x));
+  dl(d.ticker.replace('.','_')+'_fundamental.csv',r);}
+function dlTechnical(){const d=window.LAST,t=window.LASTTA;if(!t){alert('Open the Advanced technicals section first.');return;}
+  const r=[['FundaPilot — Technical analysis',d.name,d.ticker,'timeframe: '+t.tf],['Net bias',t.net_bias],[],['Indicator','Value','Signal']];
+  for(const[k,o]of Object.entries(t.indicators))r.push([k,o.value,o.signal]);
+  r.push([],['Pattern','Bias','Confidence','Detail']);(t.patterns||[]).forEach(p=>r.push([p.name,p.bias,p.confidence,p.detail]));
+  dl(d.ticker.replace('.','_')+'_technical_'+t.tf+'.csv',r);}
+function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LASTTA=null;
   out.append($(`<section class="glass"><h2>${d.name} <span class="muted">${d.ticker}</span></h2>
     <div class="muted">${d.sector||''} · ${d.industry||''}</div><div style="margin:8px 0">${(d.tags||[]).map(t=>`<span class="tag">${t}</span>`).join('')}</div>
     <div class="grid cards" style="margin-top:6px">
@@ -1346,23 +1712,44 @@ function render(d){const cur=d.currency;out.innerHTML='';
     <div><h3>Risks</h3>${(rv.risks||[]).length?rv.risks.map(x=>`<div class="flag f-bad">${x}</div>`).join(''):'<div class="muted">None detected.</div>'}</div></div>
     <div style="margin-top:10px">Verdict: <span class="verdict ${vc}">${rv.verdict}</span> <span class="muted">— ${rv.why}</span></div></section>`));
 
-  let s='<section class="glass"><h2>Scorecard (/10)</h2><div class="grid">';
-  for(const[k,v]of Object.entries(d.scores)){if(v==null)continue;s+=`<div><div style="display:flex;justify-content:space-between"><span>${k}</span><b>${v}</b></div><div class="bar"><i style="width:${v*10}%"></i></div></div>`;}
+  // download bar
+  out.append($(`<section class="glass" style="padding:12px 18px"><b>⬇️ Export to Excel/CSV:</b>
+    <button class="dl" onclick="dlFundamental()">Fundamental analysis</button>
+    <button class="dl" onclick="dlTechnical()">Technical analysis</button>
+    <span class="muted">CSV opens directly in Excel/Sheets — keep your own records.</span></section>`));
+
+  let s='<section class="glass"><h2>Scorecard (/10) <span class="muted">— '+Object.values(d.scores).filter(x=>x!=null).length+' dimensions, hover a name for the definition</span></h2><div class="grid cards">';
+  for(const[k,v]of Object.entries(d.scores)){if(v==null)continue;const col=v>=7?'var(--good)':v>=4?'var(--warn)':'var(--bad)';
+    s+=`<div class="chip"><div style="display:flex;justify-content:space-between"><span style="font-size:13px">${tip(k)}</span><b style="color:${col};font-size:16px">${v}</b></div><div class="bar" style="margin-top:6px"><i style="width:${v*10}%"></i></div></div>`;}
   out.append($(s+'</div></section>'));
 
   const val=d.valuation;
-  out.append($(`<section class="glass"><h2>Valuation — DCF &amp; reverse DCF</h2><div class="grid cards">
-    <div class="chip">DCF fair value<b>${money(cur,val.fair_value_mktcap,null)}</b><span class="muted">mkt-cap basis</span></div>
-    <div class="chip">Margin of safety<b>${val.margin_of_safety_pct==null?'—':val.margin_of_safety_pct+'%'}</b><span class="muted">+ = undervalued</span></div>
-    <div class="chip">Growth used<b>${val.growth_used_pct}%</b><span class="muted">disc ${val.discount_pct}%, ${val.proj_years}y</span></div>
-    <div class="chip">Reverse-DCF implied growth<b>${val.implied_growth_pct==null?'—':val.implied_growth_pct+'%'}</b><span class="muted">priced-in</span></div></div>
-    <p class="muted">FCF used ${money(cur,val.fcf,null)} (${val.fcf_source||'n/a'}). Undervalued if fair value &gt; market cap. If reverse-DCF growth &gt; what the company can deliver, it's priced for perfection.</p></section>`));
+  out.append($(`<section class="glass"><h2>Valuation — combined verdict <span class="muted">(DCF + growth-adjusted P/E + PEG)</span></h2>
+    <div class="grid cards">
+      <div class="chip">Final verdict<b><span class="verdict ${vcls(val.verdict)}">${val.verdict}</span></b></div>
+      <div class="chip">${tip('PEG')} & growth read<b style="font-size:14px">${val.pe_growth_verdict||'—'}</b></div>
+      <div class="chip">Growth used<b>${val.growth_pct==null?'—':val.growth_pct+'%'}</b></div></div>
+    <p class="muted" style="margin-top:8px">${val.combined_reason||''}. <b>${val.method_note}</b></p>
+    <h3>1) Growth-adjusted P/E (do investors pay up for the future?)</h3>
+    <div class="grid cards">
+      <div class="chip">Current P/E<b>${fmt(val.current_pe)}</b></div>
+      <div class="chip">Fair P/E for its growth<b>${val.fair_pe??'—'}</b><span class="muted">8 + 0.9×growth, +quality</span></div>
+      <div class="chip">Gap<b>${val.pe_gap_pct==null?'—':val.pe_gap_pct+'%'}</b><span class="muted">+ = room to re-rate</span></div></div>
+    <h3>2) DCF &amp; reverse DCF (cash-flow value)</h3>
+    <div class="grid cards">
+      <div class="chip">DCF fair value<b>${money(cur,val.fair_value_mktcap,null)}</b><span class="muted">${val.dcf_verdict}</span></div>
+      <div class="chip">Margin of safety<b>${val.margin_of_safety_pct==null?'—':val.margin_of_safety_pct+'%'}</b></div>
+      <div class="chip">Reverse-DCF implied growth<b>${val.implied_growth_pct==null?'—':val.implied_growth_pct+'%'}</b><span class="muted">priced-in</span></div></div>
+    <h3>3) Industry P/E — local vs global <span class="muted">(macro re-rating check)</span></h3>
+    <div id="indpe" class="muted">Loading industry P/E…</div>
+    <p class="muted" style="margin-top:8px">FCF used ${money(cur,val.fcf,null)} (${val.fcf_source||'n/a'}). A high P/E isn't automatically "overvalued" — if growth, quality and the global industry support it, paying up can be justified.</p></section>`));
+  loadIndustryPE(d.ticker,d.sector);
 
-  let rt='<section class="glass"><h2>Ratio analysis <span class="muted">— with plain-English benchmarks</span></h2><table><tr><th>Metric</th><th>Value</th><th style="text-align:left">What it means · benchmark</th></tr>';
+  let rt='<section class="glass"><h2>Ratio analysis <span class="muted">— hover a metric for what it is & how to use it</span></h2><table><tr><th>Metric</th><th>Value</th><th style="text-align:left">What it means · benchmark</th></tr>';
   for(const[k,o]of Object.entries(d.ratios)){const u=o.unit||'';
     const disp=o.value==null?'—':(o.inr!==undefined?money(cur,o.value,o.inr):(u==='%'?o.value+'%':u==='x'?o.value+'x':o.value));
     const meaning=o.text?`<span class="dot d-${o.rating}"></span>${o.text}${o.bench?' <span class="muted">('+o.bench+')</span>':''}`:'<span class="muted">—</span>';
-    rt+=`<tr><td>${k}</td><td>${disp}</td><td style="text-align:left;font-size:12px">${meaning}</td></tr>`;}
+    rt+=`<tr><td>${tip(k)}</td><td>${disp}</td><td style="text-align:left;font-size:12px">${meaning}</td></tr>`;}
   out.append($(rt+'</table><p class="muted">🟢 good · 🟡 ok · 🔴 watch. Benchmarks are general rules of thumb; compare within the same sector.</p></section>'));
 
   out.append($(`<section class="glass"><h2>Technical analysis</h2><div class="grid two">${tf('Daily',d.technical.daily)}${tf('Weekly',d.technical.weekly)}</div>
@@ -1370,6 +1757,14 @@ function render(d){const cur=d.currency;out.innerHTML='';
     <div class="grid two" style="margin-top:8px"><div><canvas id="cD" height="160"></canvas><div class="muted" style="text-align:center">Daily vs EMA200</div></div>
     <div><canvas id="cW" height="160"></canvas><div class="muted" style="text-align:center">Weekly vs EMA200</div></div></div></section>`));
   drawLine('cD',d.technical.daily);drawLine('cW',d.technical.weekly);
+
+  // advanced CMT technicals (indicators + pattern detection, daily/weekly switch)
+  out.append($(`<section class="glass"><h2>📐 Advanced technicals (CMT) — indicators &amp; chart patterns</h2>
+    <div class="seg" id="tfseg"><button class="on" data-tf="daily">Daily</button><button data-tf="weekly">Weekly</button></div>
+    <div id="taout" style="margin-top:12px"><div class="spin"></div></div></section>`));
+  document.getElementById('tfseg').querySelectorAll('button').forEach(b=>b.onclick=()=>{
+    document.getElementById('tfseg').querySelectorAll('button').forEach(x=>x.classList.remove('on'));b.classList.add('on');loadTechnicals(d.ticker,d.currency,b.dataset.tf);});
+  loadTechnicals(d.ticker,d.currency,'daily');
 
   if(d.history&&Object.keys(d.history).length){out.append($('<section class="glass"><h2>Historical statements</h2><canvas id="cH" height="120"></canvas></section>'));drawHist('cH',d.history);}
 
@@ -1439,6 +1834,43 @@ function tf(label,t){if(!t)return `<div class="chip"><b>${label}</b><div class="
 function drawLine(id,t){if(!t)return;charts.push(new Chart(el(id),{type:'line',data:{labels:t.dates,datasets:[{label:'Price',data:t.series,borderColor:'#6ea8fe',borderWidth:1.5,pointRadius:0,tension:.2},{label:'EMA200',data:t.dates.map(()=>t.ema200),borderColor:'#ffd166',borderWidth:1,pointRadius:0,borderDash:[5,4]}]},options:{plugins:{legend:{labels:{color:'#8b97ad'}}},scales:{x:{ticks:{color:'#8b97ad',maxTicksLimit:6}},y:{ticks:{color:'#8b97ad'}}}}}));}
 function drawHist(id,h){const keys=Object.keys(h),labels=Object.keys(h[keys[0]]).reverse(),col={'Revenue':'#6ea8fe','EBITDA':'#b39bff','Net Income':'#39d98a'};
   charts.push(new Chart(el(id),{type:'bar',data:{labels,datasets:keys.map(k=>({label:k,data:labels.map(l=>h[k][l]),backgroundColor:col[k]||'#888'}))},options:{plugins:{legend:{labels:{color:'#8b97ad'}}},scales:{x:{ticks:{color:'#8b97ad'}},y:{ticks:{color:'#8b97ad'}}}}}));}
+
+async function loadIndustryPE(ticker,sector){const box=el('indpe');if(!box)return;
+  try{const d=await(await fetch(`/industry_pe?ticker=${encodeURIComponent(ticker)}&market=Global&sector=${encodeURIComponent(sector||'')}`)).json();
+    const me=(window.LAST&&window.LAST.valuation.current_pe);
+    box.innerHTML=`<div class="grid cards">
+      <div class="chip">This stock P/E<b>${fmt(me)}</b></div>
+      <div class="chip">${d.local_sector||'Local'} industry P/E<b>${d.local_industry_pe??'—'}</b><span class="muted">India median (n=${d.local_n})</span></div>
+      <div class="chip">${d.global_sector||'Global'} industry P/E<b>${d.global_industry_pe??'—'}</b><span class="muted">US median (n=${d.global_n})</span></div></div>
+      <p class="muted">${me&&d.local_industry_pe?(me<d.local_industry_pe?'Cheaper than its Indian peers':'Pricier than its Indian peers'):''}. ${d.note}</p>`;
+  }catch(e){box.textContent='Industry P/E unavailable.';}}
+
+async function loadTechnicals(ticker,cur,tf){const box=el('taout');if(!box)return;box.innerHTML='<div class="spin"></div>';
+  let t;try{t=await(await fetch(`/technicals?ticker=${encodeURIComponent(ticker)}&market=Global&tf=${tf}`)).json();}catch(e){box.innerHTML='Failed to load.';return;}
+  if(t.error){box.innerHTML=`<p class="muted">${t.error}</p>`;return;}
+  window.LASTTA=t;
+  const bcl=t.net_bias.indexOf('ull')>-1?'v-under':t.net_bias.indexOf('ear')>-1?'v-over':'v-fair';
+  let h=`<div style="margin-bottom:10px">Net read (${tf}): <span class="verdict ${bcl}">${t.net_bias}</span> <span class="muted">${t.bull_count} bullish vs ${t.bear_count} bearish signals</span></div>`;
+  h+='<h3>Indicators <span class="muted">— hover for how to use</span></h3><table><tr><th>Indicator</th><th>Value</th><th>Signal</th></tr>';
+  for(const[k,o]of Object.entries(t.indicators)){const sc=/ullish|Oversold|Uptrend|Positive|up$|lower band|rising/i.test(o.signal)?'pos':/earish|Overbought|Downtrend|Negative|down$|upper band|falling/i.test(o.signal)?'neg':'';
+    h+=`<tr><td><span class="tip" data-tip="${(o.use||'').replace(/"/g,'&quot;')}">${k}</span></td><td>${o.value??'—'}${o.signal_line!==undefined?' / sig '+o.signal_line:''}${o.d!==undefined?' / %D '+o.d:''}${o.sma200!==undefined?' / 200: '+(o.sma200??'—'):''}</td><td class="${sc}">${o.signal}</td></tr>`;}
+  h+='</table><h3>Chart patterns detected</h3>';
+  if(t.patterns&&t.patterns.length){h+=t.patterns.map(p=>{const c=p.bias==='bullish'?'f-good':p.bias==='bearish'?'f-bad':'';return `<div class="flag ${c}"><b>${p.name}</b> <span class="pill ${p.bias==='bullish'?'yes':p.bias==='bearish'?'no':''}">${p.bias} · ${p.confidence}</span><div style="font-size:12px;margin-top:3px">${p.detail}</div></div>`;}).join('');}
+  else h+='<div class="muted">No clear textbook pattern right now (that itself is information — the trend is undecided).</div>';
+  h+=`<div style="margin-top:12px"><canvas id="cTA" height="150"></canvas><div class="muted" style="text-align:center">Close + SMA50/200 + Bollinger bands; ◆ marks pattern swing points</div></div>`;
+  h+=`<p class="muted">${t.note}</p>`;
+  box.innerHTML=h;drawTA('cTA',t);}
+
+function drawTA(id,t){const c=t.chart,base=c.base;
+  const pts=[];(t.patterns||[]).forEach(p=>(p.points||[]).forEach(idx=>{const j=idx-base;if(j>=0&&j<c.close.length)pts.push({x:c.dates[j],y:c.close[j]});}));
+  charts.push(new Chart(el(id),{data:{labels:c.dates,datasets:[
+    {type:'line',label:'Close',data:c.close,borderColor:'#e7ecf3',borderWidth:1.6,pointRadius:0,tension:.15},
+    {type:'line',label:'SMA50',data:c.sma50,borderColor:'#39d98a',borderWidth:1,pointRadius:0},
+    {type:'line',label:'SMA200',data:c.sma200,borderColor:'#ffd166',borderWidth:1,pointRadius:0},
+    {type:'line',label:'BB upper',data:c.bb_up,borderColor:'rgba(110,168,254,.4)',borderWidth:1,pointRadius:0,borderDash:[3,3]},
+    {type:'line',label:'BB lower',data:c.bb_lo,borderColor:'rgba(110,168,254,.4)',borderWidth:1,pointRadius:0,borderDash:[3,3]},
+    {type:'scatter',label:'Pattern point',data:pts,backgroundColor:'#ff6b6b',pointRadius:6,pointStyle:'rectRot'}]},
+    options:{plugins:{legend:{labels:{color:'#8b97ad',boxWidth:10}}},scales:{x:{ticks:{color:'#8b97ad',maxTicksLimit:6}},y:{ticks:{color:'#8b97ad'}}}}}));}
 
 // ---- model portfolios: sector allocation, then drill into strong companies ----
 function renderModels(){const cap=+el('capital').value||100000;
