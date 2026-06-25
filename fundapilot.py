@@ -14,6 +14,7 @@ currency AND converted to INR. EDUCATIONAL ONLY — not investment advice.
 """
 import os
 import sys
+import re
 import math
 import json
 import time
@@ -21,6 +22,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from functools import lru_cache
+from collections import deque
 import requests
 import numpy as np
 import pandas as pd
@@ -29,6 +31,43 @@ from flask import Flask, request, Response
 
 app = Flask(__name__)
 UA = {"User-Agent": "Mozilla/5.0 (FundaPilot educational)"}
+
+_TICKER_BAD = re.compile(r"[^A-Za-z0-9.\-^=&]")
+
+
+def clean_ticker(s, n=24):
+    """Whitelist ticker chars and cap length — defense-in-depth before values reach yfinance/URLs."""
+    return _TICKER_BAD.sub("", (s or "").strip())[:n].upper()
+
+
+# tiny in-memory per-IP rate limiter (no dependency). ponytail: per-worker window; fine for 1 worker
+# on Render free. Swap for Redis/flask-limiter if you scale to multiple workers.
+_RL = {}
+
+
+@app.before_request
+def _rate_limit():
+    ip = (request.headers.get("X-Forwarded-For", request.remote_addr or "?")).split(",")[0].strip()
+    now = time.time()
+    dq = _RL.setdefault(ip, deque())
+    while dq and dq[0] < now - 60:
+        dq.popleft()
+    if len(dq) >= 150:               # generous: normal use (autocomplete + 60s polling) stays well under
+        return Response('{"error":"Too many requests — slow down."}', status=429, mimetype="application/json")
+    dq.append(now)
+    if len(_RL) > 5000:              # bound memory
+        for k in list(_RL)[:1000]:
+            if not _RL[k]:
+                _RL.pop(k, None)
+
+
+@app.after_request
+def _sec_headers(resp):
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "SAMEORIGIN"
+    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    resp.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    return resp
 
 RISK = {"conservative": {"discount": 0.13, "max_weight": 0.05, "proj_years": 8},
         "medium":       {"discount": 0.12, "max_weight": 0.10, "proj_years": 8},
@@ -1409,17 +1448,32 @@ HORIZON_DAYS = {"short": 60, "medium": 180, "long": 365}
 
 def evaluate_holding(sym, buy, horizon, bench_ret6m):
     """Evaluate one holding like a standalone stock: fundamentals + technicals → health/verdict,
-    plus statistical SL/TP (ATR + 1σ horizon move) and P&L vs the average buy price."""
-    info = get_info(sym)
-    out = {"sym": sym, "name": _g(info, "shortName", "longName") or sym, "buy": buy, "sector": _g(info, "sector")}
+    plus statistical SL/TP (ATR + 1σ horizon move) and P&L vs the average buy price.
+    Fundamentals are reconstructed from the actual financial statements when Yahoo's `info`
+    feed is blocked (cloud IPs), so D/E, P/E, ROE etc. are real numbers, never blank/hypothetical."""
+    t = yf.Ticker(sym)
+    info = dict(get_info(sym))
+    fast = _fast(t)
+    fin = bs = None
+    try: fin = t.financials
+    except Exception: pass
+    try: bs = t.balance_sheet
+    except Exception: pass
+    out = {"sym": sym, "name": _g(info, "shortName", "longName") or sym, "buy": buy}
     try:
-        df = yf.Ticker(sym).history(period="1y").dropna()
+        df = t.history(period="1y").dropna()
     except Exception:
         df = None
     if df is None or len(df) < 60:
         out["error"] = "no price data"; return out
     c, h, l = df["Close"], df["High"], df["Low"]
     price = float(c.iloc[-1])
+    # fill any missing fundamentals from the real statements (works even when info is blocked)
+    for k, v in _compute_fundamentals(fin, bs, None, fast, price, None).items():
+        if _g(info, k) is None and v is not None:
+            info[k] = v
+    inst = institutional_metrics(fin, bs, None, _g(info, "marketCap"), _g(info, "ebitda"), None)
+    out["sector"] = _g(info, "sector")
     rsi14 = float(rsi(c).iloc[-1])
     sma50 = float(c.rolling(50).mean().iloc[-1])
     sma200 = float(c.rolling(200).mean().iloc[-1]) if len(c) >= 200 else None
@@ -1431,7 +1485,10 @@ def evaluate_holding(sym, buy, horizon, bench_ret6m):
     rs = round(ret6m - bench_ret6m, 1) if (ret6m is not None and bench_ret6m is not None) else None
     pe, roe = _g(info, "trailingPE"), _g(info, "returnOnEquity")
     eg, de, pb = _g(info, "earningsGrowth", "earningsQuarterlyGrowth"), _g(info, "debtToEquity"), _g(info, "priceToBook")
+    roce, ev_ebitda = inst.get("ROCE %"), inst.get("EV/EBITDA")
+    cagr = inst.get("Earnings CAGR 3y %")
     fs = [s for s in [score(roe * 100, 22, 5) if roe is not None else None,
+                      score(roce, 18, 6) if roce is not None else None,
                       score(pe, 12, 45) if pe else None,
                       score(eg * 100, 20, 0) if eg is not None else None,
                       score(de, 30, 150) if de is not None else None,
@@ -1445,22 +1502,15 @@ def evaluate_holding(sym, buy, horizon, bench_ret6m):
     T = HORIZON_DAYS.get(horizon, 180)
     exp_move_pct = round(dvol * math.sqrt(min(T, 252)) * 100, 1)  # 1σ expected move over the horizon
     sl, tp = round(price - 2 * atr, 2), round(price + 3 * atr, 2)  # ATR stop/target, ~1.5 reward:risk
-    cagr = None
-    try:
-        ni = _srow(yf.Ticker(sym).financials, "Net Income", "Net Income Common Stockholders")
-        if ni is not None and len(ni) > 3 and float(ni.iloc[3]) > 0:
-            cagr = round(((float(ni.iloc[0]) / float(ni.iloc[3])) ** (1 / 3) - 1) * 100, 1)
-    except Exception:
-        pass
     out.update({"price": round(price, 2), "rsi": round(rsi14, 1), "above_200dma": above200,
                 "sma_uptrend": bool(sma50 and sma200 and sma50 > sma200), "atr": round(atr, 2),
-                "rel_strength_6m": rs, "pe": pe, "roe_pct": _pct(roe), "earnings_growth_pct": _pct(eg),
-                "de": de, "earnings_cagr_3y": cagr, "fund_score": fund, "tech_score": tech,
-                "health": health, "verdict": verdict,
+                "rel_strength_6m": rs, "pe": pe, "pb": pb, "roe_pct": _pct(roe), "roce_pct": roce,
+                "ev_ebitda": ev_ebitda, "marketCap": _g(info, "marketCap"),
+                "earnings_growth_pct": _pct(eg), "de": de, "earnings_cagr_3y": cagr,
+                "fund_score": fund, "tech_score": tech, "health": health, "verdict": verdict,
                 "pnl_pct": round((price / buy - 1) * 100, 1) if buy else None,
                 "sl": sl, "sl_pct": round((sl / price - 1) * 100, 1),
                 "tp": tp, "tp_pct": round((tp / price - 1) * 100, 1), "expected_move_pct": exp_move_pct,
-                # levels anchored at the investor's average buy price (not just current price)
                 "sl_buy": round(buy - 2 * atr, 2) if buy else None,
                 "tp_buy": round(buy + 3 * atr, 2) if buy else None})
     return out
@@ -1511,15 +1561,23 @@ def portfolio_eval(holdings, horizon, extra_capital):
     to_add = [e for e in valid if e["verdict"] == "Accumulate"]
     freed = sum(e["value"] * (0.5 if e["verdict"] == "Reduce" else 1.0) for e in to_trim)
 
-    subs = {}
-    for e in to_trim[:4]:
+    # peer comparison for EVERY holding (best names in its sector) + substitutes for the weak ones.
+    # Each unique sector is screened once (real-statement fundamentals) to keep it fast.
+    screened, peer_compare, subs = {}, {}, {}
+    for e in valid:
         peers, sec = find_peers(e["sym"], e.get("sector"))
-        if peers and e["sym"] not in subs:
-            ranked = screen_pool([p for p in peers if p != e["sym"]], "fundamental")[:3]
-            picks = [{"ticker": r["ticker"], "name": r["name"], "quality": r["quality"], "pe": r["pe"], "roe": r["roe"], "momentum_6m": r["momentum_6m"]}
-                     for r in ranked if (r.get("quality") or 0) > (e["fund_score"] or 0)]
-            if picks:
-                subs[e["sym"]] = {"sector": sec, "picks": picks}
+        if not peers:
+            continue
+        if sec not in screened:
+            screened[sec] = screen_pool([p for p in peers if p != e["sym"]][:6], "fundamental")
+        top = screened[sec]
+        better = [r for r in top if (r.get("quality") or 0) > (e["fund_score"] or 0)]
+        peer_compare[e["sym"]] = {"sector": sec, "holding_quality": e["fund_score"],
+                                  "best": top[0]["ticker"] if top else None,
+                                  "top_peers": [{"ticker": r["ticker"], "name": r["name"], "quality": r["quality"],
+                                                 "pe": r["pe"], "roe": r["roe"], "momentum_6m": r["momentum_6m"]} for r in top[:4]]}
+        if e["verdict"] in ("Reduce", "Exit") and better:
+            subs[e["sym"]] = {"sector": sec, "picks": peer_compare[e["sym"]]["top_peers"][:3]}
 
     have = extra_capital > 0
     plan = []
@@ -1560,12 +1618,35 @@ def portfolio_eval(holdings, horizon, extra_capital):
     for s in sectors[:3]:
         nm = s["sector"]
         sector_news[nm] = google_news(f"{nm} sector India outlook policy", n=3)
+
+    # --- decisive "if I were you" final verdict ---
+    def nm(e): return e["sym"].replace(".NS", "").replace(".BO", "")
+    sell = [e for e in valid if e["verdict"] == "Exit"]
+    trim = [e for e in valid if e["verdict"] == "Reduce"]
+    avg_down = [e for e in to_add if e.get("pnl_pct") is not None and e["pnl_pct"] < 0]
+    add_more = [e for e in to_add if e not in avg_down]
+    switch = [(s, v["picks"][0]) for s, v in subs.items() if v.get("picks")]
+    fv = []
+    if sell: fv.append(f"Sell {', '.join(nm(e) for e in sell)} — weak fundamentals and downtrend; the capital works harder elsewhere.")
+    if trim: fv.append(f"Trim {', '.join(nm(e) for e in trim)} by ~half — keep a toe in but cut the dead weight.")
+    if conc > 30: fv.append(f"Cut {sectors[0]['sector']} from {conc}% toward ≤30% — that single-sector bet is your biggest risk.")
+    if avg_down: fv.append(f"Average down {', '.join(nm(e) for e in avg_down)} — thesis intact and they're below your buy.")
+    if add_more: fv.append(f"Add to {', '.join(nm(e) for e in add_more)} — strongest names; let winners run.")
+    if switch: fv.append("Upgrade quality: swap " + "; ".join(f"{s.replace('.NS','')} → {p['ticker'].replace('.NS','')}" for s, p in switch[:3]) + " (higher-quality same-sector peers).")
+    if not fv: fv.append("Hold — the book is healthy and balanced; no action beats activity here. Re-check after the next results season.")
+    lead = rotation[0]["sector"] if rotation else None
+    headline = (f"If I were you: this is a **{overall_verdict.lower()}** book ({overall_health}/10). "
+                + ("Top priority — " + fv[0] + " " if fv else "")
+                + (f"Lean new money toward the leading sector ({lead}). " if lead else "")
+                + "Then set the SL/TP below and let the thesis — not noise — decide exits.")
+
     return {"horizon": horizon, "extra_capital": extra_capital, "total_value": round(total),
             "overall_health": overall_health, "overall_verdict": overall_verdict, "portfolio_earnings_cagr": port_cagr,
             "holdings": sorted(valid, key=lambda e: -e["health"]), "errors": [e["sym"] for e in evals if "error" in e],
             "sectors": sectors, "concentration_pct": conc, "sector_rotation": rotation,
             "to_trim": [e["sym"] for e in to_trim], "to_add": [e["sym"] for e in to_add],
-            "freed_capital": round(freed), "substitutes": subs, "plan": plan, "steps": steps, "sector_news": sector_news,
+            "freed_capital": round(freed), "substitutes": subs, "peer_compare": peer_compare,
+            "final_verdict": {"headline": headline, "actions": fv}, "plan": plan, "steps": steps, "sector_news": sector_news,
             "note": "Per-stock health = 60% fundamentals + 40% technicals. SL = price−2×ATR(14), TP = price+3×ATR (≈1.5 reward:risk); "
                     "expected move = daily σ × √(horizon trading days) = a 1-standard-deviation range. News/policy is qualitative — use it to "
                     "widen/tighten these levels and to confirm a Reduce/Exit. Educational only."}
@@ -1588,7 +1669,7 @@ def universe():
 
 @app.route("/search")
 def search():
-    q = (request.args.get("q") or "").strip()
+    q = (request.args.get("q") or "").strip()[:48]
     if len(q) < 2:
         return jresp([])
     try:
@@ -1605,7 +1686,7 @@ def search():
 
 @app.route("/peers")
 def peers_compare():
-    syms = [s for s in (request.args.get("tickers") or "").split(",") if s][:7]
+    syms = [clean_ticker(s) for s in (request.args.get("tickers") or "").split(",") if s][:7]
     rows = []
     for s in syms:
         i = get_info(s)
@@ -1617,7 +1698,7 @@ def peers_compare():
 
 @app.route("/quote")
 def quote():
-    syms = [s for s in (request.args.get("tickers") or "").split(",") if s][:30]
+    syms = [clean_ticker(s) for s in (request.args.get("tickers") or "").split(",") if s][:30]
     out = {}
     for s in syms:
         try:
@@ -1631,7 +1712,7 @@ def quote():
 @app.route("/optimize", methods=["POST"])
 def optimize():
     d = request.get_json(force=True)
-    holdings = [{"sym": (h.get("sym") or "").strip().upper(), "qty": float(h.get("qty") or 0), "buy": float(h.get("buy") or 0)}
+    holdings = [{"sym": clean_ticker(h.get("sym")), "qty": float(h.get("qty") or 0), "buy": float(h.get("buy") or 0)}
                 for h in d.get("holdings", []) if h.get("sym")]
     if not holdings:
         return jresp({"error": "Add at least one holding."}, 400)
@@ -1644,7 +1725,7 @@ def optimize():
 @app.route("/portfolio_eval", methods=["POST"])
 def portfolio_eval_route():
     d = request.get_json(force=True)
-    holdings = [{"sym": (h.get("sym") or "").strip().upper(), "qty": float(h.get("qty") or 0), "buy": float(h.get("buy") or 0)}
+    holdings = [{"sym": clean_ticker(h.get("sym")), "qty": float(h.get("qty") or 0), "buy": float(h.get("buy") or 0)}
                 for h in d.get("holdings", []) if h.get("sym")]
     if not holdings:
         return jresp({"error": "Add at least one holding."}, 400)
@@ -1656,7 +1737,7 @@ def portfolio_eval_route():
 
 @app.route("/portfolio_news")
 def portfolio_news():
-    syms = [s for s in (request.args.get("tickers") or "").split(",") if s][:8]
+    syms = [clean_ticker(s) for s in (request.args.get("tickers") or "").split(",") if s][:8]
     out = []
     for s in syms:
         base = s.replace(".NS", "").replace(".BO", "")
@@ -1713,7 +1794,7 @@ def dashboard():
 
 @app.route("/technicals")
 def technicals():
-    sym = (request.args.get("ticker") or "").strip().upper()
+    sym = clean_ticker(request.args.get("ticker"))
     market = request.args.get("market", "NSE")
     tf = request.args.get("tf", "daily")
     if market in ("NSE", "BSE") and not sym.endswith((".NS", ".BO")):
@@ -1728,7 +1809,7 @@ def technicals():
 
 @app.route("/industry_pe")
 def industry_pe_route():
-    sym = (request.args.get("ticker") or "").strip().upper()
+    sym = clean_ticker(request.args.get("ticker"))
     market = request.args.get("market", "NSE")
     if market in ("NSE", "BSE") and not sym.endswith((".NS", ".BO")):
         sym += ".NS" if market == "NSE" else ".BO"
@@ -1742,7 +1823,7 @@ def industry_pe_route():
 def do_analyze():
     d = request.get_json(force=True)
     market = d.get("market", "NSE")
-    sym = (d.get("ticker") or "").strip().upper()
+    sym = clean_ticker(d.get("ticker"))
     if not sym:
         return jresp({"error": "Enter a ticker."}, 400)
     if market in ("NSE", "BSE") and not sym.endswith((".NS", ".BO")):
@@ -1942,6 +2023,8 @@ details summary{cursor:pointer;color:var(--mut);font-size:13px}.disc{font-size:1
 const $=h=>{const d=document.createElement('div');d.innerHTML=h;return d.firstElementChild};
 const el=id=>document.getElementById(id), out=el('out');
 const fmt=n=>n==null?'—':(Math.abs(n)>=1e7?(n/1e7).toFixed(2)+' Cr':Math.abs(n)>=1e5?(n/1e5).toFixed(2)+' L':Number(n).toLocaleString(undefined,{maximumFractionDigits:2}));
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));  // XSS-safe text for innerHTML
+const safeUrl=u=>/^https?:\/\//i.test(String(u||''))?u:'#';  // block javascript:/data: links
 let charts=[],mode='search',UNI={},MOD={};
 function setMode(m){mode=m;document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x.dataset.tab===m));
   ['search','explore','models','track','markets','watch','me'].forEach(k=>el('m-'+k).style.display=k===m?(k==='search'||k==='explore'?'grid':'block'):'none');
@@ -2222,7 +2305,7 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
   // sector analysis
   const sa=d.sector_analysis;
   let sh=`<section class="glass"><h2>🧭 Sector analysis — ${sa.name||''}</h2><p class="muted">Recent sector news sentiment: <span class="pos">${sa.tally.pos} positive</span> · <span class="neg">${sa.tally.neg} negative</span>. ${sa.note}</p><div class="news">`;
-  sh+=sa.news.length?sa.news.map(n=>`<div class="flag ${n.tone=='neg'?'f-bad':n.tone=='pos'?'f-good':''}"><a href="${n.link}" target="_blank">${n.title}</a> <small class="muted">${n.date}</small></div>`).join(''):'<div class="muted">No sector headlines.</div>';
+  sh+=sa.news.length?sa.news.map(n=>`<div class="flag ${n.tone=='neg'?'f-bad':n.tone=='pos'?'f-good':''}"><a href="${safeUrl(n.link)}" target="_blank" rel="noopener noreferrer">${esc(n.title)}</a> <small class="muted">${n.date}</small></div>`).join(''):'<div class="muted">No sector headlines.</div>';
   out.append($(sh+'</div></section>'));
 
   out.append($(`<section class="glass"><h2>⚔️ Peer comparison <span class="muted">— ${d.peer_sector||''}</span></h2><div id="peerbox" class="muted">Loading peers…</div></section>`));
@@ -2247,7 +2330,7 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
   out.append($(ca+`<p class="muted">${d.institutional.note}</p></div></div></section>`));
 
   let nh='<section class="glass"><h2>📰 Live news</h2><div class="news">';
-  nh+=d.news.length?d.news.map(n=>`<div class="flag ${n.tone=='neg'?'f-bad':n.tone=='pos'?'f-good':''}"><a href="${n.link}" target="_blank">${n.title}</a> <small class="muted">${n.date}</small></div>`).join(''):'<div class="muted">No headlines.</div>';
+  nh+=d.news.length?d.news.map(n=>`<div class="flag ${n.tone=='neg'?'f-bad':n.tone=='pos'?'f-good':''}"><a href="${safeUrl(n.link)}" target="_blank" rel="noopener noreferrer">${esc(n.title)}</a> <small class="muted">${n.date}</small></div>`).join(''):'<div class="muted">No headlines.</div>';
   out.append($(nh+'</div><p class="muted">Live from Google News (14d). Tone is a keyword heuristic — read the source.</p></section>'));
 
   // proof / methodology
@@ -2378,6 +2461,11 @@ function renderEval(d){const o=el('t-eval-out');o.innerHTML='';
     <div class="chip">Overall health<b>${d.overall_health}/10</b></div>
     <div class="chip">Verdict<b><span class="verdict ${oc}">${d.overall_verdict}</span></b></div>
     <div class="chip">Blended earnings CAGR<b>${d.portfolio_earnings_cagr==null?'—':d.portfolio_earnings_cagr+'%'}</b><span class="muted">vs NIFTY ~12%</span></div></div></section>`));
+  // decisive final verdict
+  if(d.final_verdict){const fvh=esc(d.final_verdict.headline).replace(/\*\*(.+?)\*\*/g,'<b>$1</b>');
+    o.append($(`<section class="glass"><h2>🧠 If I were you — final verdict</h2>
+      <div class="rec" style="font-size:15px">${fvh}</div>
+      <div style="margin-top:10px">${d.final_verdict.actions.map((a,i)=>`<div class="flag ${/Sell|Trim|Cut/i.test(a)?'f-bad':'f-good'}"><b>${i+1}.</b> ${esc(a)}</div>`).join('')}</div></section>`));}
   // how to rebalance — explicit steps + the situational plan
   o.append($(`<section class="glass"><h2>🔁 How to rebalance</h2>
     <ol style="line-height:1.7;padding-left:20px">${(d.steps||[]).map(s=>`<li>${s}</li>`).join('')}</ol>
@@ -2391,10 +2479,10 @@ function renderEval(d){const o=el('t-eval-out');o.innerHTML='';
         <span>Health <b>${e.health}/10</b> · <span class="verdict ${e.verdict==='Accumulate'?'v-under':(e.verdict==='Exit'||e.verdict==='Reduce')?'v-over':'v-fair'}">${e.verdict}</span> · P&L <span class="${e.pnl_pct>=0?'pos':'neg'}">${e.pnl_pct==null?'—':(e.pnl_pct>=0?'+':'')+e.pnl_pct+'%'}</span></span></div>
       <div class="grid two" style="margin-top:10px">
         <div><h3 style="margin-top:0">Fundamentals — ${e.fund_score}/10</h3>
-          <div class="kv">P/E: <b>${fmt(e.pe)}</b></div>
-          <div class="kv">ROE: <b>${e.roe_pct==null?'—':e.roe_pct+'%'}</b></div>
-          <div class="kv">Earnings growth (1y): <b>${e.earnings_growth_pct==null?'—':e.earnings_growth_pct+'%'}</b></div>
-          <div class="kv">Earnings CAGR (3y): <b>${e.earnings_cagr_3y==null?'—':e.earnings_cagr_3y+'%'}</b></div>
+          <div class="kv">P/E: <b>${fmt(e.pe)}</b> · P/B: <b>${fmt(e.pb)}</b></div>
+          <div class="kv">ROE: <b>${e.roe_pct==null?'—':e.roe_pct+'%'}</b> · ROCE: <b>${e.roce_pct==null?'—':e.roce_pct+'%'}</b></div>
+          <div class="kv">EV/EBITDA: <b>${fmt(e.ev_ebitda)}</b></div>
+          <div class="kv">Earnings growth (1y): <b>${e.earnings_growth_pct==null?'—':e.earnings_growth_pct+'%'}</b> · CAGR 3y: <b>${e.earnings_cagr_3y==null?'—':e.earnings_cagr_3y+'%'}</b></div>
           <div class="kv">Debt/Equity: <b>${e.de==null?'—':e.de+'%'}</b></div></div>
         <div><h3 style="margin-top:0">Technicals — ${e.tech_score}/10</h3>
           <div class="kv">Trend: <b>${e.above_200dma?'▲ above 200-DMA':'▼ below 200-DMA'}${e.sma_uptrend?' · 50&gt;200':''}</b></div>
@@ -2406,10 +2494,17 @@ function renderEval(d){const o=el('t-eval-out');o.innerHTML='';
         <div class="kv">From <b>your avg ₹${fmt(e.buy)}</b>: SL <span class="neg">₹${fmt(e.sl_buy)}</span> · TP <span class="pos">₹${fmt(e.tp_buy)}</span></div></div>
     </div>`;});
   o.append($(h+'<p class="muted">Each holding scored on its own: fundamentals (60%) + technicals (40%) → health. SL/TP from ATR(14), shown from both the current price and your average buy price.</p></section>'));
-  // substitutes
-  if(d.substitutes&&Object.keys(d.substitutes).length){let s='<section class="glass"><h2>🔁 Stronger substitutes</h2>';
+  // peer comparison for every holding
+  if(d.peer_compare&&Object.keys(d.peer_compare).length){let pc='<section class="glass"><h2>⚖️ Peer comparison — each holding vs the best in its sector</h2>';
+    for(const[sym,o2]of Object.entries(d.peer_compare)){const me=sym.replace('.NS','').replace('.BO','');
+      pc+=`<h3>${me} <span class="muted">(quality ${o2.holding_quality}/10) · ${o2.sector}</span></h3><table><tr><th>Sector peer</th><th>Quality</th><th>P/E</th><th>ROE%</th><th>6m%</th></tr>`;
+      (o2.top_peers||[]).forEach(p=>{const better=(p.quality||0)>(o2.holding_quality||0);pc+=`<tr><td>${better?'⭐ ':''}${esc(p.name||p.ticker)} <span class="muted">${p.ticker.replace('.NS','')}</span></td><td class="${better?'pos':''}">${p.quality??'—'}</td><td>${fmt(p.pe)}</td><td>${fmt(p.roe)}</td><td>${fmt(p.momentum_6m)}</td></tr>`;});
+      pc+='</table>';}
+    o.append($(pc+'<p class="muted">⭐ = a same-sector name scoring higher on fundamental quality (real-statement based) than your holding. Use it to decide whether to upgrade.</p></section>'));}
+  // substitutes (the clear upgrade for weak holdings)
+  if(d.substitutes&&Object.keys(d.substitutes).length){let s='<section class="glass"><h2>🔁 Recommended upgrades (weak holdings)</h2>';
     for(const[sym,o2]of Object.entries(d.substitutes)){s+=`<h3>${sym.replace('.NS','')} → stronger ${o2.sector} names</h3><table><tr><th>Candidate</th><th>Quality</th><th>P/E</th><th>ROE%</th><th>6m%</th></tr>`;
-      o2.picks.forEach(p=>s+=`<tr><td>${p.name||p.ticker} <span class="muted">${p.ticker.replace('.NS','')}</span></td><td>${p.quality??'—'}</td><td>${fmt(p.pe)}</td><td>${fmt(p.roe)}</td><td>${fmt(p.momentum_6m)}</td></tr>`);s+='</table>';}
+      o2.picks.forEach(p=>s+=`<tr><td>${esc(p.name||p.ticker)} <span class="muted">${p.ticker.replace('.NS','')}</span></td><td>${p.quality??'—'}</td><td>${fmt(p.pe)}</td><td>${fmt(p.roe)}</td><td>${fmt(p.momentum_6m)}</td></tr>`);s+='</table>';}
     o.append($(s+'<p class="muted">Same-sector names scoring higher on quality than the holding they\'d replace. Confirm before switching.</p></section>'));}
   // sector mix + rotation + news
   let sc='<section class="glass"><h2>🧭 Sector mix &amp; rotation</h2><div class="grid two"><div><h3>Your sector weights</h3>';
@@ -2418,7 +2513,7 @@ function renderEval(d){const o=el('t-eval-out');o.innerHTML='';
   sc+=`<p class="muted">Largest sector ${d.concentration_pct}% of the book; keep any one under ~30% and rotate trims toward the leaders above.</p>`;
   if(d.sector_news&&Object.keys(d.sector_news).length){sc+='<h3>What\'s moving your sectors (news that can affect your horizon)</h3>';
     for(const[sec,news]of Object.entries(d.sector_news)){sc+=`<div style="margin-bottom:8px"><b>${sec}</b>`;
-      sc+=(news&&news.length)?news.map(n=>`<div class="flag ${n.tone=='neg'?'f-bad':n.tone=='pos'?'f-good':''}"><a href="${n.link}" target="_blank">${n.title}</a> <small class="muted">${n.date}</small></div>`).join(''):'<div class="muted">No recent headlines.</div>';sc+='</div>';}}
+      sc+=(news&&news.length)?news.map(n=>`<div class="flag ${n.tone=='neg'?'f-bad':n.tone=='pos'?'f-good':''}"><a href="${safeUrl(n.link)}" target="_blank" rel="noopener noreferrer">${esc(n.title)}</a> <small class="muted">${n.date}</small></div>`).join(''):'<div class="muted">No recent headlines.</div>';sc+='</div>';}}
   o.append($(sc+'</section>'));}
 
 async function optimizePort(){const p=loadPort();if(p.length<1){el('t-opt-out').innerHTML='<section class="glass">Add holdings first.</section>';return;}
@@ -2495,7 +2590,7 @@ function renderOptimize(d){const m=d.mpt,r=d.risk,bm=d.benchmarks,o=el('t-opt-ou
 async function loadPortNews(){const p=loadPort();if(!p.length){el('t-news').innerHTML='';return;}
   const news=await(await fetch('/portfolio_news?tickers='+encodeURIComponent(p.map(h=>h.sym).join(',')))).json();
   let h='<section class="glass"><h2>📰 Portfolio news (live)</h2><div class="news">';
-  h+=Array.isArray(news)&&news.length?news.map(n=>`<div class="flag ${n.tone=='neg'?'f-bad':n.tone=='pos'?'f-good':''}"><span class="tag">${n.ticker}</span> <a href="${n.link}" target="_blank">${n.title}</a> <small class="muted">${n.date}</small></div>`).join(''):'<div class="muted">No headlines.</div>';
+  h+=Array.isArray(news)&&news.length?news.map(n=>`<div class="flag ${n.tone=='neg'?'f-bad':n.tone=='pos'?'f-good':''}"><span class="tag">${esc(n.ticker)}</span> <a href="${safeUrl(n.link)}" target="_blank" rel="noopener noreferrer">${esc(n.title)}</a> <small class="muted">${n.date}</small></div>`).join(''):'<div class="muted">No headlines.</div>';
   el('t-news').innerHTML=h+'</div><p class="muted">Live Google News for each holding (14d). Read the source.</p></section>';}
 function drawMC(id,mc,value){const bins=[mc.p5,mc.p50,mc.p95];charts.push(new Chart(el(id),{type:'bar',
   data:{labels:['Worst 5%','Median','Best 5%'],datasets:[{label:'Ending value ₹',data:bins,backgroundColor:['#ff6b6b','#ffd166','#39d98a']}]},

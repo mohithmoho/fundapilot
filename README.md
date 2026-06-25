@@ -70,6 +70,19 @@ FundaPilot runs fully **without** any of this. Turn it on to give users **Google
 
 > Privacy: only the user's own watchlist/history rows are readable (RLS). You store no passwords — Google handles auth. Add a short privacy note to your repo before sharing widely.
 
+## Security posture
+
+- **No secrets in the repo.** All keys (Supabase, optional FRED/Anthropic) come from environment variables on Render, never committed. The Supabase **anon key is public-by-design** — data is protected by **Row-Level Security** (each user reads only their own rows).
+- **Auth** is handled by Supabase/Google OAuth; the Flask app never sees or stores passwords.
+- **No database on the app server** — the Flask backend is stateless and never builds SQL, so there's no SQL-injection surface. The browser talks to Supabase via its client (parameterized).
+- **Input hardening** — ticker inputs are whitelisted (`[A-Za-z0-9.\-^=&]`, length-capped) before reaching yfinance/URLs; list endpoints cap item counts.
+- **Rate limiting** — a per-IP limiter (150 req/min) throttles abuse of the data proxy.
+- **Security headers** — `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy` on every response.
+- **XSS** — all externally-sourced text (news titles, company names) is HTML-escaped before rendering, and links are restricted to `http(s)`.
+- **Transport** — Render serves over HTTPS by default.
+
+Residual notes: the free tier runs one worker, so the rate limiter is per-process (fine at this scale; use Redis/flask-limiter if you scale out). There's no strict Content-Security-Policy because the UI uses inline scripts + CDNs — add one if you later split the JS into a file.
+
 ## What it does
 
 - **Find a stock** — live autocomplete with **🇮🇳 Indian results ranked first**, or **Explore by Country → Sector → Company**, or by **Category** (Large / Mid / Small cap, High-dividend, Aggressive).
