@@ -62,6 +62,16 @@ BENCH = {
     "Earnings growth %": {"unit": "%", "hb": True, "cut": (15, 5), "what": "How fast profit is growing year-on-year."},
     "Dividend yield %": {"unit": "%", "hb": True, "cut": (2, 0.7), "what": "Cash dividend as % of price. Higher = more income."},
     "Beta":             {"unit": "", "hb": None, "cut": None, "what": "Volatility vs market. <1 calmer than market, >1 swings more."},
+    "EV/EBITDA":        {"unit": "x", "hb": False, "cut": (12, 20), "what": "Enterprise value vs cash operating profit. Capital-structure-neutral — the multiples desk's go-to. Lower = cheaper."},
+    "FCF yield %":      {"unit": "%", "hb": True, "cut": (5, 2), "what": "Free cash flow ÷ market cap. The cash return the business throws off — >5% is attractive."},
+    "P/S":              {"unit": "x", "hb": False, "cut": (3, 6), "what": "Price ÷ sales. Useful when earnings are thin; lower = cheaper on revenue."},
+    "ROCE %":           {"unit": "%", "hb": True, "cut": (15, 10), "what": "Return on capital employed = EBIT ÷ (assets − current liabilities). Capital efficiency incl. debt — better than ROE."},
+    "ROIC %":           {"unit": "%", "hb": True, "cut": (12, 8), "what": "Return on invested capital. >cost of capital (~10-12%) means the firm creates value."},
+    "Interest coverage": {"unit": "x", "hb": True, "cut": (5, 2.5), "what": "EBIT ÷ interest expense. How easily it services debt; <2.5 is fragile."},
+    "Revenue CAGR 3y %": {"unit": "%", "hb": True, "cut": (12, 5), "what": "3-year compound sales growth — durable trend, not one noisy year."},
+    "Earnings CAGR 3y %": {"unit": "%", "hb": True, "cut": (12, 5), "what": "3-year compound profit growth."},
+    "Altman Z":         {"unit": "", "hb": True, "cut": (3, 1.81), "what": "Bankruptcy-risk score. >2.99 safe, 1.81–2.99 grey zone, <1.81 distress."},
+    "Piotroski F":      {"unit": "/9", "hb": True, "cut": (7, 4), "what": "9-point fundamental-quality checklist (profitability, leverage, efficiency). 7-9 strong, ≤3 weak."},
 }
 MONEY_KEYS = {"EBITDA", "PAT (net income)", "Free cash flow"}
 
@@ -437,6 +447,69 @@ def _compute_fundamentals(fin, bs, cf, fast, price, beta):
     return f
 
 
+def institutional_metrics(fin, bs, cf, mktcap, ebitda, fcf):
+    """Quality / solvency / advanced-valuation metrics a CFA-level analyst computes from statements:
+    EV/EBITDA, FCF yield, P/S, ROCE, ROIC, interest coverage, 3y CAGRs, Altman Z, Piotroski F."""
+    L = lambda s: float(s.iloc[0]) if s is not None and len(s) else None
+    Pr = lambda s: float(s.iloc[1]) if s is not None and len(s) > 1 else None
+    nth = lambda s, n: float(s.iloc[n]) if s is not None and len(s) > n else None
+    rev, ni = _srow(fin, "Total Revenue", "Operating Revenue"), _srow(fin, "Net Income", "Net Income Common Stockholders")
+    ebit = _srow(fin, "EBIT", "Operating Income")
+    intexp, gross = _srow(fin, "Interest Expense"), _srow(fin, "Gross Profit")
+    ta, cl = _srow(bs, "Total Assets"), _srow(bs, "Current Liabilities", "Total Current Liabilities")
+    ca, eq = _srow(bs, "Current Assets", "Total Current Assets"), _srow(bs, "Stockholders Equity", "Common Stock Equity")
+    debt, ltd = _srow(bs, "Total Debt"), _srow(bs, "Long Term Debt")
+    cash = _srow(bs, "Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments")
+    re, totliab = _srow(bs, "Retained Earnings"), _srow(bs, "Total Liabilities Net Minority Interest", "Total Liabilities")
+    shares, ocf = _srow(bs, "Share Issued", "Ordinary Shares Number"), _srow(cf, "Operating Cash Flow")
+    R, NI, EBIT, TA, CL, EQ, D, C = L(rev), L(ni), L(ebit), L(ta), L(cl), L(eq), L(debt), L(cash)
+    m = {}
+    if mktcap and ebitda and ebitda > 0:
+        m["EV/EBITDA"] = round((mktcap + (D or 0) - (C or 0)) / ebitda, 2)
+    if fcf and mktcap:
+        m["FCF yield %"] = round(fcf / mktcap * 100, 2)
+    if mktcap and R:
+        m["P/S"] = round(mktcap / R, 2)
+    if EBIT and TA and CL and (TA - CL) > 0:
+        m["ROCE %"] = round(EBIT / (TA - CL) * 100, 2)
+    if EBIT and ((D or 0) + (EQ or 0) - (C or 0)) > 0:
+        m["ROIC %"] = round(EBIT * 0.75 / ((D or 0) + (EQ or 0) - (C or 0)) * 100, 2)  # NOPAT≈EBIT×(1−25% tax)
+    IE = L(intexp)
+    if EBIT and IE and IE != 0:
+        m["Interest coverage"] = round(EBIT / abs(IE), 2)
+    r0, r3 = L(rev), nth(rev, 3)
+    if r0 and r3 and r3 > 0:
+        m["Revenue CAGR 3y %"] = round(((r0 / r3) ** (1 / 3) - 1) * 100, 1)
+    n0, n3 = L(ni), nth(ni, 3)
+    if n0 and n3 and n3 > 0:
+        m["Earnings CAGR 3y %"] = round(((n0 / n3) ** (1 / 3) - 1) * 100, 1)
+    if TA and TA > 0 and mktcap and totliab is not None:
+        A = ((L(ca) or 0) - (CL or 0)) / TA
+        m["Altman Z"] = round(1.2 * A + 1.4 * (L(re) or 0) / TA + 3.3 * (EBIT or 0) / TA
+                              + 0.6 * mktcap / (L(totliab) or 1) + 1.0 * (R or 0) / TA, 2)
+    # Piotroski F-score (0-9), scored only over sub-tests with available data
+    f = fmax = 0
+    ta1 = Pr(ta)
+    roa0 = (n0 / TA) if (n0 and TA) else None
+    roa1 = (Pr(ni) / ta1) if (Pr(ni) and ta1) else None
+    tests = [(roa0 is not None, (roa0 or 0) > 0),
+             (L(ocf) is not None, (L(ocf) or 0) > 0),
+             (roa0 is not None and roa1 is not None, (roa0 or 0) > (roa1 or 0)),
+             (L(ocf) is not None and n0 is not None, (L(ocf) or 0) > (n0 or 0)),
+             (L(ltd) is not None and Pr(ltd) is not None and TA and ta1, (L(ltd) or 0) / (TA or 1) < (Pr(ltd) or 0) / (ta1 or 1)),
+             (L(ca) and CL and Pr(ca) and Pr(cl), (L(ca) or 0) / (CL or 1) > (Pr(ca) or 0) / (Pr(cl) or 1)),
+             (L(shares) and Pr(shares), (L(shares) or 0) <= (Pr(shares) or 0)),
+             (L(gross) and r0 and Pr(gross) and Pr(rev), (L(gross) or 0) / (r0 or 1) > (Pr(gross) or 0) / (Pr(rev) or 1)),
+             (r0 and TA and Pr(rev) and ta1, (r0 or 0) / (TA or 1) > (Pr(rev) or 0) / (ta1 or 1))]
+    for avail, ok in tests:
+        if avail:
+            fmax += 1; f += 1 if ok else 0
+    if fmax >= 5:
+        m["Piotroski F"] = f
+        m["_piotroski_max"] = fmax
+    return m
+
+
 def fetch(ticker, years):
     t = yf.Ticker(ticker)
     notes = []
@@ -535,7 +608,7 @@ def fetch(ticker, years):
     except Exception as e:
         notes.append(f"holders: {e}")
 
-    return t, info, cur_code, sym, price, hist, tech, inst_pct, holders, corporate_actions(t), notes
+    return t, info, cur_code, sym, price, hist, tech, inst_pct, holders, corporate_actions(t), notes, fin, bs, cf
 
 
 def research_verdict(overall, verdict):
@@ -853,7 +926,7 @@ def _style_cat(key):
 
 
 def analyze(ticker, horizon, risk, capital, years, style):
-    t, info, cur_code, sym, price, hist, tech, inst_pct, holders, actions, notes = fetch(ticker, years)
+    t, info, cur_code, sym, price, hist, tech, inst_pct, holders, actions, notes, fin, bs, cf = fetch(ticker, years)
     rp = RISK[risk]
     proj_years = max(HORIZON_YEARS.get(horizon, 8), rp["proj_years"])
     name = _g(info, "longName", "shortName") or ticker
@@ -874,6 +947,7 @@ def analyze(ticker, horizon, risk, capital, years, style):
     ebitda_margin = (ebitda / rev_ttm) if (ebitda and rev_ttm) else None
 
     fcf, fcf_src, fcf_detail = derive_fcf(info, t)
+    inst = institutional_metrics(fin, bs, cf, mktcap, ebitda, fcf)  # ROCE, ROIC, EV/EBITDA, Z, F-score...
     g = max(0.03, min(0.18, (earn_g or rev_g or 0.08)))
     fair = dcf(fcf, g, rp["discount"], proj_years)
     implied_g = reverse_dcf(fcf, mktcap, rp["discount"], proj_years)
@@ -881,6 +955,16 @@ def analyze(ticker, horizon, risk, capital, years, style):
     if fair and mktcap:
         mos = round((fair / mktcap - 1) * 100, 1)
         dcf_verdict = "Undervalued" if mos > 20 else ("Overvalued" if mos < -20 else "Fairly valued")
+
+    # --- scenario DCF: bear / base / bull (range, not a single point — how analysts actually quote value) ---
+    scenarios = {}
+    if fcf and mktcap:
+        for nm, gadj, dadj in [("Bear", -0.03, 0.02), ("Base", 0.0, 0.0), ("Bull", 0.03, -0.01)]:
+            gg = max(0.02, min(0.20, g + gadj)); dd = rp["discount"] + dadj
+            fv = dcf(fcf, gg, dd, proj_years)
+            if fv:
+                scenarios[nm] = {"fair_value": fv, "mos_pct": round((fv / mktcap - 1) * 100, 1),
+                                 "growth_pct": round(gg * 100, 1), "discount_pct": round(dd * 100, 1)}
 
     # --- growth-adjusted valuation: what P/E is justified by growth + quality (investors pay up for the future) ---
     gr = (earn_g if earn_g is not None else rev_g)
@@ -928,6 +1012,10 @@ def analyze(ticker, horizon, risk, capital, years, style):
         "Cash flow (FCF)": (8.0 if (fcf and fcf > 0) else 2.0) if fcf is not None else None,
         "Dividend": score((div_y or 0) * 100, 3, 0) if div_y is not None else None,
         "Momentum / trend": _momentum(tech),
+        "Capital efficiency (ROCE)": score(inst.get("ROCE %"), 18, 6) if inst.get("ROCE %") is not None else None,
+        "Cash valuation (FCF yield)": score(inst.get("FCF yield %"), 6, 1) if inst.get("FCF yield %") is not None else None,
+        "Quality (Piotroski)": round(inst["Piotroski F"] / inst["_piotroski_max"] * 10, 1) if inst.get("Piotroski F") is not None else None,
+        "Solvency (Altman Z)": score(inst.get("Altman Z"), 3, 1.0) if inst.get("Altman Z") is not None else None,
     }
     valid = {k: v for k, v in scores.items() if v is not None}
     overall = round(sum(valid.values()) / len(valid), 1) if valid else None
@@ -942,10 +1030,15 @@ def analyze(ticker, horizon, risk, capital, years, style):
                         ("Dividend payer" if (div_y and div_y > 0.015) else None),
                         ("Aggressive (high beta)" if (beta and beta > 1.3) else ("Defensive (low beta)" if (beta and beta < 0.8) else None))] if c]
 
-    # ratios with units, benchmark, INR conversion
-    raw = {"P/E (trailing)": pe, "P/E (forward)": fpe, "P/B": pb, "PEG": peg, "ROE %": _pct(roe),
+    # ratios with units, benchmark, INR conversion (+ institutional metrics merged in)
+    raw = {"P/E (trailing)": pe, "P/E (forward)": fpe, "P/B": pb, "PEG": peg,
+           "EV/EBITDA": inst.get("EV/EBITDA"), "P/S": inst.get("P/S"), "FCF yield %": inst.get("FCF yield %"),
+           "ROE %": _pct(roe), "ROCE %": inst.get("ROCE %"), "ROIC %": inst.get("ROIC %"),
            "Operating margin %": _pct(opm), "Net/PAT margin %": _pct(npm), "Debt/Equity %": de,
-           "Current ratio": cur_ratio, "Revenue growth %": _pct(rev_g), "Earnings growth %": _pct(earn_g),
+           "Interest coverage": inst.get("Interest coverage"), "Current ratio": cur_ratio,
+           "Revenue growth %": _pct(rev_g), "Earnings growth %": _pct(earn_g),
+           "Revenue CAGR 3y %": inst.get("Revenue CAGR 3y %"), "Earnings CAGR 3y %": inst.get("Earnings CAGR 3y %"),
+           "Altman Z": inst.get("Altman Z"), "Piotroski F": inst.get("Piotroski F"),
            "EBITDA": ebitda, "PAT (net income)": pat, "Free cash flow": fcf, "Dividend yield %": _pct(div_y), "Beta": beta}
     ratios = {}
     for k, v in raw.items():
@@ -994,7 +1087,13 @@ def analyze(ticker, horizon, risk, capital, years, style):
                           "growth_pct": gr_pct, "fair_pe": fair_pe, "current_pe": pe, "pe_gap_pct": pe_gap,
                           "pe_growth_verdict": pe_growth_verdict, "peg": peg,
                           "combined_reason": " · ".join(reasons),
+                          "scenarios": scenarios,
                           "method_note": "Combined verdict blends DCF, growth-adjusted fair P/E and PEG — not just P/E & P/B. A high P/E can still be 'fair' if growth/quality justify paying up for the future."},
+            "quality": {"piotroski": inst.get("Piotroski F"), "piotroski_max": inst.get("_piotroski_max"),
+                        "altman_z": inst.get("Altman Z"), "roce": inst.get("ROCE %"), "roic": inst.get("ROIC %"),
+                        "ev_ebitda": inst.get("EV/EBITDA"), "fcf_yield": inst.get("FCF yield %"),
+                        "interest_coverage": inst.get("Interest coverage"),
+                        "note": "Institutional quality & solvency screens computed from the financial statements."},
             "history": hist, "technical": tech,
             "institutional": {"pct": inst_pct, "holders": holders,
                               "note": "Total institutional % from Yahoo. FII vs DII split → NSE shareholding pattern (linked below)."},
@@ -1221,6 +1320,19 @@ def technical_analysis(ticker, tf="daily"):
     sma50, sma200 = lastf(c.rolling(50).mean()), lastf(c.rolling(200).mean())
     atr = lastf(_adx(h, l, c)[3])
 
+    # relative strength vs benchmark (CMT): is the stock out/under-performing the index?
+    rs6 = None
+    look = 126 if tf == "daily" else 26
+    try:
+        bench = "^NSEI" if ticker.endswith((".NS", ".BO")) else "^GSPC"
+        bc = yf.Ticker(bench).history(period=period, interval=interval)["Close"].dropna()
+        if len(c) > look and len(bc) > look:
+            stock_ret = float(c.iloc[-1] / c.iloc[-look] - 1) * 100
+            idx_ret = float(bc.iloc[-1] / bc.iloc[-look] - 1) * 100
+            rs6 = round(stock_ret - idx_ret, 1)
+    except Exception:
+        pass
+
     def sig(cond_bull, cond_bear, bull="Bullish", bear="Bearish", neut="Neutral"):
         return bull if cond_bull else (bear if cond_bear else neut)
 
@@ -1245,6 +1357,8 @@ def technical_analysis(ticker, tf="daily"):
         "ATR (14)": {"value": atr, "signal": "Volatility", "use": "Average True Range — typical bar size; size stops/positions off it."},
         "SMA 50 / 200": {"value": sma50, "sma200": sma200, "signal": sig(sma50 and sma200 and sma50 > sma200, sma50 and sma200 and sma50 < sma200, "Uptrend (50>200)", "Downtrend (50<200)"),
                          "use": "Trend backbone. Price & 50-day above 200-day = healthy long-term uptrend."},
+        "Relative Strength vs index": {"value": rs6, "signal": sig((rs6 or 0) > 2, (rs6 or 0) < -2, "Outperforming", "Underperforming"),
+                                       "use": "Stock return minus index return over ~6 months. Positive = leadership (CMT relative strength)."},
     }
     patterns = detect_patterns(o, h, l, c)
     tailN = 140
@@ -1503,6 +1617,21 @@ def _selftest():
     hi, lows = _swings(np.array([1, 3, 2, 5, 1, 4, 0]), order=1)
     assert 3 in hi and 4 in lows
     assert _style_cat("Earnings growth") == "Growth" and _style_cat("Valuation (P/E)") == "Valuation (P/E)"
+    # institutional metrics on synthetic statements (2 years)
+    cols = pd.to_datetime(["2024-03-31", "2023-03-31", "2022-03-31", "2021-03-31"])  # most-recent first
+    fin = pd.DataFrame([[1000, 900, 820, 750], [250, 220, 200, 180], [150, 130, 115, 100],
+                        [400, 360, 330, 300], [20, 22, 24, 26]], columns=cols,
+                       index=["Total Revenue", "Operating Income", "Net Income", "Gross Profit", "Interest Expense"])
+    bs = pd.DataFrame([[2000, 1900, 1800, 1700], [500, 480, 470, 460], [700, 680, 650, 600],
+                       [900, 880, 860, 840], [300, 320, 340, 360], [400, 380, 360, 340],
+                       [600, 600, 600, 600], [1100, 1080, 1060, 1020], [100, 100, 100, 100]], columns=cols,
+                      index=["Total Assets", "Current Liabilities", "Current Assets", "Stockholders Equity",
+                             "Total Debt", "Retained Earnings", "Long Term Debt", "Total Liabilities Net Minority Interest", "Cash And Cash Equivalents"])
+    cfd = pd.DataFrame([[180, 160, 150, 140]], columns=cols, index=["Operating Cash Flow"])
+    im = institutional_metrics(fin, bs, cfd, mktcap=3000, ebitda=300, fcf=160)
+    assert im["EV/EBITDA"] > 0 and im["ROCE %"] > 0 and im["FCF yield %"] > 0
+    assert im["Altman Z"] > 0 and 0 <= im["Piotroski F"] <= im["_piotroski_max"] <= 9
+    assert im["Revenue CAGR 3y %"] > 0
     print("selftest OK")
 
 
@@ -1679,7 +1808,18 @@ const GLOSSARY={
 "Sharpe ratio":"Return per unit of total risk. >1 good, >2 excellent.","Sortino ratio":"Like Sharpe but counts only downside risk.",
 "Alpha (vs ^NSEI)":"Return above what beta predicts — skill vs the index.","Portfolio beta":"Your whole book's sensitivity to the market.",
 "1-day VaR (95%)":"A typical bad-day loss — exceeded about 1 day in 20.","CVaR / Exp. Shortfall":"Average loss on the worst 5% of days (worse than VaR).",
-"Max drawdown":"Worst peak-to-trough drop — the deepest pain you'd have sat through.","Golden Cross":"50-day average crosses above the 200-day — classic long-term bullish signal.","Death Cross":"50-day crosses below 200-day — long-term bearish warning."};
+"Max drawdown":"Worst peak-to-trough drop — the deepest pain you'd have sat through.","Golden Cross":"50-day average crosses above the 200-day — classic long-term bullish signal.","Death Cross":"50-day crosses below 200-day — long-term bearish warning.",
+"EV/EBITDA":"Enterprise value (mkt cap + debt − cash) ÷ EBITDA. The capital-structure-neutral multiple deal desks use; lower = cheaper.",
+"FCF yield %":"Free cash flow ÷ market cap. The actual cash return the business generates for owners; >5% is attractive.",
+"P/S":"Price ÷ sales. A fallback multiple when earnings are thin or volatile.",
+"ROCE %":"Return on capital employed = EBIT ÷ (assets − current liabilities). Capital efficiency including debt — sharper than ROE.",
+"ROIC %":"Return on invested capital. If it beats the ~10–12% cost of capital, the company is genuinely value-creating.",
+"Interest coverage":"EBIT ÷ interest expense — how many times over it can pay its interest. <2.5× is fragile.",
+"Revenue CAGR 3y %":"3-year compound annual sales growth — a durable trend, not one noisy year.",
+"Earnings CAGR 3y %":"3-year compound annual profit growth.",
+"Altman Z":"Bankruptcy-risk score from 5 ratios. >2.99 safe, 1.81–2.99 grey zone, <1.81 distress.",
+"Piotroski F":"9-point fundamental-quality checklist (profitability, leverage, efficiency). 7–9 strong, ≤3 weak.",
+"Relative Strength vs index":"Stock return minus index return (~6 months). Positive = it's leading the market (CMT relative strength)."};
 function tip(term){const g=GLOSSARY[term];return g?`<span class="tip" data-tip="${g.replace(/"/g,'&quot;')}">${term}</span>`:term;}
 function csvCell(x){x=(x==null?'':String(x));return /[",\n]/.test(x)?'"'+x.replace(/"/g,'""')+'"':x;}
 function dl(name,rows){const csv=rows.map(r=>r.map(csvCell).join(',')).join('\n');const b=new Blob([csv],{type:'text/csv'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=name;a.click();}
@@ -1712,6 +1852,22 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
     <div><h3>Risks</h3>${(rv.risks||[]).length?rv.risks.map(x=>`<div class="flag f-bad">${x}</div>`).join(''):'<div class="muted">None detected.</div>'}</div></div>
     <div style="margin-top:10px">Verdict: <span class="verdict ${vc}">${rv.verdict}</span> <span class="muted">— ${rv.why}</span></div></section>`));
 
+  // institutional quality & solvency highlight
+  const q=d.quality||{};
+  if(q.piotroski!=null||q.altman_z!=null||q.roce!=null||q.ev_ebitda!=null){
+    const zc=q.altman_z==null?'':q.altman_z>=3?'pos':q.altman_z<1.81?'neg':'';
+    const fc=q.piotroski==null?'':q.piotroski>=7?'pos':q.piotroski<=3?'neg':'';
+    out.append($(`<section class="glass"><h2>🏛️ Institutional quality &amp; solvency <span class="muted">(from the statements)</span></h2>
+      <div class="grid cards">
+        <div class="chip">${tip('Piotroski F')}<b class="${fc}">${q.piotroski==null?'—':q.piotroski+' / '+q.piotroski_max}</b><span class="muted">fundamental quality</span></div>
+        <div class="chip">${tip('Altman Z')}<b class="${zc}">${q.altman_z??'—'}</b><span class="muted">${q.altman_z==null?'':q.altman_z>=3?'Safe':q.altman_z<1.81?'Distress zone':'Grey zone'}</span></div>
+        <div class="chip">${tip('ROCE %')}<b>${q.roce==null?'—':q.roce+'%'}</b></div>
+        <div class="chip">${tip('ROIC %')}<b>${q.roic==null?'—':q.roic+'%'}</b></div>
+        <div class="chip">${tip('EV/EBITDA')}<b>${q.ev_ebitda==null?'—':q.ev_ebitda+'x'}</b></div>
+        <div class="chip">${tip('FCF yield %')}<b>${q.fcf_yield==null?'—':q.fcf_yield+'%'}</b></div>
+        <div class="chip">${tip('Interest coverage')}<b>${q.interest_coverage==null?'—':q.interest_coverage+'x'}</b></div></div>
+      <p class="muted">${q.note} Hover any term for what it is &amp; how to use it.</p></section>`));}
+
   // download bar
   out.append($(`<section class="glass" style="padding:12px 18px"><b>⬇️ Export to Excel/CSV:</b>
     <button class="dl" onclick="dlFundamental()">Fundamental analysis</button>
@@ -1740,6 +1896,9 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
       <div class="chip">DCF fair value<b>${money(cur,val.fair_value_mktcap,null)}</b><span class="muted">${val.dcf_verdict}</span></div>
       <div class="chip">Margin of safety<b>${val.margin_of_safety_pct==null?'—':val.margin_of_safety_pct+'%'}</b></div>
       <div class="chip">Reverse-DCF implied growth<b>${val.implied_growth_pct==null?'—':val.implied_growth_pct+'%'}</b><span class="muted">priced-in</span></div></div>
+    ${val.scenarios&&Object.keys(val.scenarios).length?`<h3>Scenario DCF — bear / base / bull range</h3><div class="grid cards">
+      ${Object.entries(val.scenarios).map(([k,s])=>`<div class="chip">${k}<b>${money(cur,s.fair_value,null)}</b><span class="muted">${s.mos_pct>=0?'+':''}${s.mos_pct}% · g ${s.growth_pct}%, disc ${s.discount_pct}%</span></div>`).join('')}</div>
+      <p class="muted">A value range, not a single point — the honest way to quote intrinsic value.</p>`:''}
     <h3>3) Industry P/E — local vs global <span class="muted">(macro re-rating check)</span></h3>
     <div id="indpe" class="muted">Loading industry P/E…</div>
     <p class="muted" style="margin-top:8px">FCF used ${money(cur,val.fcf,null)} (${val.fcf_source||'n/a'}). A high P/E isn't automatically "overvalued" — if growth, quality and the global industry support it, paying up can be justified.</p></section>`));
