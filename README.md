@@ -33,6 +33,40 @@ Notes: the **free tier sleeps after 15 min idle**, so the first visit after a na
 
 > Production server: `gunicorn` (in `requirements.txt`, configured in `render.yaml`). Locally you still just run `python fundapilot.py` — gunicorn is Linux-only and unused on Windows.
 
+## Optional: accounts, Google login & per-user data (Supabase)
+
+FundaPilot runs fully **without** any of this. Turn it on to give users **Google sign-in**, **saved watchlists**, and an **analysis journal** (which powers the calibration/“learning” view). Auth + data live in **Supabase** (free tier; the Flask app is untouched). The Supabase URL + anon key are public-by-design — **Row-Level Security** keeps each user's data private.
+
+**One-time setup (≈15 min, free):**
+1. Create a project at **supabase.com** → copy the **Project URL** and **anon public key** (Settings → API).
+2. **SQL editor → run this** (creates the tables + privacy rules):
+   ```sql
+   create table if not exists public.watchlist (
+     user_id uuid not null references auth.users on delete cascade,
+     ticker text not null, name text, added_at timestamptz default now(),
+     primary key (user_id, ticker));
+   alter table public.watchlist enable row level security;
+   create policy "own watchlist" on public.watchlist for all
+     using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+   create table if not exists public.search_history (
+     id bigint generated always as identity primary key,
+     user_id uuid not null references auth.users on delete cascade,
+     ticker text, name text, verdict text, score numeric, price numeric,
+     at timestamptz default now());
+   alter table public.search_history enable row level security;
+   create policy "own history" on public.search_history for all
+     using (auth.uid() = user_id) with check (auth.uid() = user_id);
+   ```
+3. **Enable Google login:** Supabase → Authentication → Providers → **Google** → enable. It asks for a Google **Client ID + Secret** — make them in **Google Cloud Console → Credentials → OAuth client (Web)**, with **Authorized redirect URI** = `https://<your-project-ref>.supabase.co/auth/v1/callback`. Paste them back into Supabase.
+4. Supabase → Authentication → **URL Configuration**: set **Site URL** to `https://fundapilot.onrender.com` and add it to **Redirect URLs**.
+5. **Render → your service → Environment**, add:
+   - `SUPABASE_URL` = your Project URL
+   - `SUPABASE_ANON_KEY` = your anon public key
+   Save → it redeploys. The **🔐 Sign in with Google** button and **👤 My space** tab now appear; unset the vars and they vanish (app still works).
+
+> Privacy: only the user's own watchlist/history rows are readable (RLS). You store no passwords — Google handles auth. Add a short privacy note to your repo before sharing widely.
+
 ## What it does
 
 - **Find a stock** — live autocomplete with **🇮🇳 Indian results ranked first**, or **Explore by Country → Sector → Company**, or by **Category** (Large / Mid / Small cap, High-dividend, Aggressive).

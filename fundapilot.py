@@ -1402,7 +1402,11 @@ def industry_pe(ticker, sector):
 # ---------------------------- routes ----------------------------
 @app.route("/")
 def index():
-    return Response(HTML, mimetype="text/html")
+    # Supabase URL + anon key are public-by-design (RLS protects data). Injected from env so they
+    # aren't hardcoded in the repo; if unset, the app runs exactly as before (no login UI).
+    cfg = ("<script>window.SB_URL=%s;window.SB_KEY=%s;</script>"
+           % (json.dumps(os.environ.get("SUPABASE_URL", "")), json.dumps(os.environ.get("SUPABASE_ANON_KEY", ""))))
+    return Response(HTML.replace("<!--SBCFG-->", cfg), mimetype="text/html")
 
 
 @app.route("/universe")
@@ -1638,6 +1642,8 @@ def _selftest():
 HTML = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>FundaPilot — institutional-grade equity research & portfolio optimization</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<!--SBCFG-->
 <style>
 :root{--bg:#0b0f1a;--card:rgba(255,255,255,.05);--line:rgba(255,255,255,.10);--txt:#e7ecf3;--mut:#8b97ad;--acc:#6ea8fe;--good:#39d98a;--bad:#ff6b6b;--warn:#ffd166}
 *{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,Segoe UI,Roboto,sans-serif;color:var(--txt);background:radial-gradient(1200px 600px at 20% -10%,#16243f,transparent),radial-gradient(900px 500px at 90% 0%,#1a1330,transparent),var(--bg);min-height:100vh}
@@ -1683,7 +1689,11 @@ details summary{cursor:pointer;color:var(--mut);font-size:13px}.disc{font-size:1
   .rec{font-size:14px}
 }
 @media(max-width:420px){.cards,.panel{grid-template-columns:1fr}}
+#authbar{position:absolute;top:14px;right:16px;font-size:13px;display:flex;gap:8px;align-items:center}
+#authbar button{background:#0e1422;color:var(--acc);border:1px solid var(--line);padding:7px 12px;border-radius:10px;font-size:13px}
+@media(max-width:680px){#authbar{position:static;justify-content:center;margin-top:8px}}
 </style></head><body>
+<div id="authbar"></div>
 <header>
   <div style="display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap">
     <svg width="64" height="64" viewBox="0 0 100 100" aria-label="FundaPilot logo">
@@ -1712,6 +1722,7 @@ details summary{cursor:pointer;color:var(--mut);font-size:13px}.disc{font-size:1
     <div class="tab" data-tab="track">📈 My portfolio (live)</div>
     <div class="tab" data-tab="markets">🌐 Markets</div>
     <div class="tab" data-tab="watch">⭐ Watchlists</div>
+    <div class="tab" data-tab="me" id="metab" style="display:none">👤 My space</div>
   </div>
   <div id="m-search" class="panel">
     <div class="full ac"><label>Company / ticker</label><input id="ticker" placeholder="Type e.g. Reliance, HAL, Apple…" autocomplete="off">
@@ -1727,6 +1738,7 @@ details summary{cursor:pointer;color:var(--mut);font-size:13px}.disc{font-size:1
   <div id="m-track" style="display:none"></div>
   <div id="m-markets" style="display:none"></div>
   <div id="m-watch" style="display:none"></div>
+  <div id="m-me" style="display:none"></div>
   <div id="filters" class="panel" style="margin-top:14px">
     <div><label>Time horizon</label><select id="horizon"><option value="short">Short (≤3y)</option><option value="medium" selected>Medium (3–7y)</option><option value="long">Long (7y+)</option></select></div>
     <div><label>Risk appetite</label><select id="risk"><option value="conservative">Conservative</option><option value="medium" selected>Medium</option><option value="aggressive">Aggressive</option></select></div>
@@ -1745,10 +1757,58 @@ const el=id=>document.getElementById(id), out=el('out');
 const fmt=n=>n==null?'—':(Math.abs(n)>=1e7?(n/1e7).toFixed(2)+' Cr':Math.abs(n)>=1e5?(n/1e5).toFixed(2)+' L':Number(n).toLocaleString(undefined,{maximumFractionDigits:2}));
 let charts=[],mode='search',UNI={},MOD={};
 function setMode(m){mode=m;document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x.dataset.tab===m));
-  ['search','explore','models','track','markets','watch'].forEach(k=>el('m-'+k).style.display=k===m?(k==='search'||k==='explore'?'grid':'block'):'none');
+  ['search','explore','models','track','markets','watch','me'].forEach(k=>el('m-'+k).style.display=k===m?(k==='search'||k==='explore'?'grid':'block'):'none');
   el('filters').style.display=(m==='search'||m==='explore')?'grid':'none';
-  if(m==='models')renderModels();if(m==='track')renderTracker();if(m==='markets')renderMarkets();if(m==='watch')renderWatch();}
+  if(m==='models')renderModels();if(m==='track')renderTracker();if(m==='markets')renderMarkets();if(m==='watch')renderWatch();if(m==='me')renderMe();}
 document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>setMode(t.dataset.tab));
+
+// ---------- Supabase auth + per-user data (graceful: app works fully without it) ----------
+let SB=null, USER=null;
+if(window.SB_URL&&window.SB_KEY&&window.supabase){
+  SB=window.supabase.createClient(window.SB_URL,window.SB_KEY);
+  SB.auth.getSession().then(({data})=>{USER=data.session?data.session.user:null;paintAuth();});
+  SB.auth.onAuthStateChange((_e,s)=>{USER=s?s.user:null;paintAuth();});
+}
+paintAuth();
+function paintAuth(){const bar=el('authbar');if(!bar)return;
+  if(!SB){bar.innerHTML='';return;}
+  el('metab').style.display='block';
+  if(USER){bar.innerHTML=`<span class="muted">👤 ${USER.email||'signed in'}</span><button id="logout">Sign out</button>`;
+    el('logout').onclick=()=>SB.auth.signOut();}
+  else{bar.innerHTML=`<button id="login">🔐 Sign in with Google</button>`;
+    el('login').onclick=()=>SB.auth.signInWithOAuth({provider:'google',options:{redirectTo:window.location.origin}});}}
+async function saveWatch(ticker,name){if(!SB){alert('Sign in (top-right) to save watchlists.');return;}if(!USER){alert('Please sign in with Google first.');return;}
+  const {error}=await SB.from('watchlist').upsert({user_id:USER.id,ticker,name},{onConflict:'user_id,ticker'});
+  alert(error?('Could not save: '+error.message):('Saved '+ticker+' to your watchlist.'));}
+async function logCall(d){if(!SB||!USER)return;try{await SB.from('search_history').insert(
+  {user_id:USER.id,ticker:d.ticker,name:d.name,verdict:(d.research&&d.research.verdict)||null,score:d.overall,price:d.price});}catch(e){}}
+async function renderMe(){const box=el('m-me');
+  if(!SB){box.innerHTML='<section class="glass"><h2>👤 My space</h2><p class="muted">Accounts aren\'t enabled on this deployment. Set SUPABASE_URL & SUPABASE_ANON_KEY (see README) to turn on Google sign-in, saved watchlists and your analysis journal.</p></section>';return;}
+  if(!USER){box.innerHTML='<section class="glass"><h2>👤 My space</h2><p class="muted">Sign in with Google (top-right) to see your saved watchlist and analysis journal.</p></section>';return;}
+  box.innerHTML='<div class="spin"></div>';
+  const wl=await SB.from('watchlist').select('*').order('added_at',{ascending:false});
+  const hist=await SB.from('search_history').select('*').order('at',{ascending:false}).limit(40);
+  let h=`<section class="glass"><h2>⭐ My watchlist</h2>`;
+  const rows=(wl.data||[]);
+  h+=rows.length?'<table><tr><th>Ticker</th><th>Name</th><th></th><th></th></tr>'+rows.map(r=>`<tr><td>${r.ticker.replace('.NS','')}</td><td>${r.name||''}</td><td><a href="#" class="wlgo" data-t="${r.ticker}">Analyze</a></td><td><a href="#" class="wlrm" data-t="${r.ticker}">✕</a></td></tr>`).join('')+'</table>':'<p class="muted">Empty. Analyze a stock and hit ★ Save.</p>';
+  h+='</section>';
+  // analysis journal + simple calibration (the honest "learning" loop)
+  const hr=(hist.data||[]);
+  h+='<section class="glass"><h2>📓 Analysis journal &amp; calibration</h2><p class="muted">Your past calls scored against live price — this is how you see which signals actually work for you (no black-box prediction).</p><div id="caloutput"><div class="spin"></div></div></section>';
+  box.innerHTML=h;
+  box.querySelectorAll('.wlgo').forEach(a=>a.onclick=e=>{e.preventDefault();el('ticker').value=a.dataset.t.replace('.NS','').replace('.BO','');el('market').value=a.dataset.t.endsWith('.BO')?'BSE':a.dataset.t.endsWith('.NS')?'NSE':'Global';setMode('search');el('go').click();});
+  box.querySelectorAll('.wlrm').forEach(a=>a.onclick=async e=>{e.preventDefault();await SB.from('watchlist').delete().eq('user_id',USER.id).eq('ticker',a.dataset.t);renderMe();});
+  calibrate(hr);}
+async function calibrate(hr){const box=el('caloutput');if(!box)return;if(!hr.length){box.innerHTML='<p class="muted">No calls logged yet — analyze some stocks while signed in.</p>';return;}
+  const syms=[...new Set(hr.map(r=>r.ticker))];const q=await(await fetch('/quote?tickers='+encodeURIComponent(syms.join(',')))).json();
+  let wins=0,scored=0,t='<table><tr><th>Date</th><th>Ticker</th><th>Verdict</th><th>Score</th><th>Price then</th><th>Now</th><th>Return</th></tr>';
+  hr.forEach(r=>{const now=q[r.ticker]?q[r.ticker].price:null;const ret=(now&&r.price)?(now/r.price-1)*100:null;
+    const good=(ret!=null)&&((/Buy|Under/i.test(r.verdict||'')&&ret>0)||(/Avoid|Over/i.test(r.verdict||'')&&ret<0));
+    if(ret!=null&&/Buy|Avoid|Under|Over/i.test(r.verdict||'')){scored++;if(good)wins++;}
+    const rc=ret==null?'':ret>=0?'pos':'neg';
+    t+=`<tr><td>${(r.at||'').slice(0,10)}</td><td>${r.ticker.replace('.NS','')}</td><td>${r.verdict||'—'}</td><td>${r.score??'—'}</td><td>${fmt(r.price)}</td><td>${now==null?'—':fmt(now)}</td><td class="${rc}">${ret==null?'—':(ret>=0?'+':'')+ret.toFixed(1)+'%'}</td></tr>`;});
+  const hit=scored?Math.round(wins/scored*100):null;
+  box.innerHTML=(hit!=null?`<div class="rec">🎯 Directional hit-rate so far: <b>${hit}%</b> on ${scored} scored calls. ${hit>=60?'Your calls are adding value — keep the discipline.':hit>=45?'Roughly coin-flip — tighten your criteria.':'Below 50% — review what your "Buy" calls have in common.'}</div>`:'')+t+'</table>';}
 
 fetch('/universe').then(r=>r.json()).then(u=>{UNI=u.universe;MOD=u.models;
   el('ex-country').innerHTML=Object.keys(UNI).map(c=>`<option>${c}</option>`).join('');fillSectors();});
@@ -1819,7 +1879,23 @@ const GLOSSARY={
 "Earnings CAGR 3y %":"3-year compound annual profit growth.",
 "Altman Z":"Bankruptcy-risk score from 5 ratios. >2.99 safe, 1.81–2.99 grey zone, <1.81 distress.",
 "Piotroski F":"9-point fundamental-quality checklist (profitability, leverage, efficiency). 7–9 strong, ≤3 weak.",
-"Relative Strength vs index":"Stock return minus index return (~6 months). Positive = it's leading the market (CMT relative strength)."};
+"Relative Strength vs index":"Stock return minus index return (~6 months). Positive = it's leading the market (CMT relative strength).",
+"EBITDA":"Earnings before interest, tax, depreciation & amortization — a clean read on core operating profit.",
+"PAT (net income)":"Profit After Tax — the bottom-line profit left for shareholders.",
+"Net/PAT margin %":"Final profit kept per ₹100 of sales.","Operating margin %":"Core-operations profit per ₹100 of sales.",
+"Revenue growth %":"Year-on-year sales growth.","Earnings growth %":"Year-on-year profit growth.","Dividend yield %":"Annual dividend ÷ price — your cash income rate.",
+"Current ratio":"Short-term assets ÷ short-term dues. Above 1 means it can cover near-term bills.","Debt/Equity %":"Borrowings vs own capital. <60% is comfortable.",
+// scorecard dimension names
+"Valuation (DCF)":"Cheapness on discounted-cash-flow fair value vs price.","Valuation (P/E)":"Cheapness on the price-to-earnings multiple.","Valuation (P/B)":"Cheapness on price-to-book.","Valuation (PEG)":"P/E adjusted for growth (~1 is fair).",
+"Growth-adjusted P/E":"How the current P/E compares to the P/E its growth & quality justify.","Profitability (ROE)":"Return on shareholders' equity — quality of profits.",
+"Operating margin":"Core operating profitability.","Net / PAT margin":"Bottom-line profitability.","EBITDA margin":"Operating profitability before non-cash & financing items.",
+"Revenue growth":"Sales growth trend.","Earnings growth":"Profit growth trend.","Financial health (D/E)":"Leverage — lower debt is safer.","Liquidity (current ratio)":"Ability to pay short-term bills.",
+"Cash flow (FCF)":"Whether the business generates positive free cash flow.","Dividend":"Income returned to shareholders.","Momentum / trend":"Price trend & momentum (above EMA200, RSI position).",
+"Capital efficiency (ROCE)":"Return on capital employed — how well it turns capital into profit.","Cash valuation (FCF yield)":"Free cash flow ÷ market cap — the cash return you earn.",
+"Quality (Piotroski)":"9-point fundamental-quality checklist, scaled to /10.","Solvency (Altman Z)":"Bankruptcy-risk score, scaled to /10 (higher = safer).",
+"Diversification":"How well risk is spread — higher effective holdings & lower correlation is better.","Portfolio beta":"Your whole book's sensitivity to the market.",
+"Expected return":"Annualized historical mean return (NOT a forecast).","CAGR":"Compound annual growth of the portfolio over the lookback.","Volatility":"Annualized standard deviation of returns — the swing size.",
+"Sector concentration":"Largest single-sector weight. Keep under ~30% to limit concentration risk.","Annual dividend":"Estimated forward dividend cash from the whole portfolio."};
 function tip(term){const g=GLOSSARY[term];return g?`<span class="tip" data-tip="${g.replace(/"/g,'&quot;')}">${term}</span>`:term;}
 function csvCell(x){x=(x==null?'':String(x));return /[",\n]/.test(x)?'"'+x.replace(/"/g,'""')+'"':x;}
 function dl(name,rows){const csv=rows.map(r=>r.map(csvCell).join(',')).join('\n');const b=new Blob([csv],{type:'text/csv'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=name;a.click();}
@@ -1833,8 +1909,9 @@ function dlTechnical(){const d=window.LAST,t=window.LASTTA;if(!t){alert('Open th
   for(const[k,o]of Object.entries(t.indicators))r.push([k,o.value,o.signal]);
   r.push([],['Pattern','Bias','Confidence','Detail']);(t.patterns||[]).forEach(p=>r.push([p.name,p.bias,p.confidence,p.detail]));
   dl(d.ticker.replace('.','_')+'_technical_'+t.tf+'.csv',r);}
-function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LASTTA=null;
-  out.append($(`<section class="glass"><h2>${d.name} <span class="muted">${d.ticker}</span></h2>
+function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LASTTA=null;logCall(d);
+  out.append($(`<section class="glass"><h2>${d.name} <span class="muted">${d.ticker}</span>
+      <button class="dl" style="float:right" onclick="saveWatch('${d.ticker}','${(d.name||'').replace(/'/g,'')}')">★ Save to watchlist</button></h2>
     <div class="muted">${d.sector||''} · ${d.industry||''}</div><div style="margin:8px 0">${(d.tags||[]).map(t=>`<span class="tag">${t}</span>`).join('')}</div>
     <div class="grid cards" style="margin-top:6px">
       <div class="chip">Price<b>${money(cur,d.price,d.price_inr)}</b></div>
@@ -2098,19 +2175,19 @@ function renderOptimize(d){const m=d.mpt,r=d.risk,bm=d.benchmarks,o=el('t-opt-ou
     <p class="muted">${inc.note}</p></section>`));
   o.append($(`<section class="glass"><h2>🧮 Portfolio optimization (Modern Portfolio Theory)</h2>
     <div class="grid cards"><div class="chip">Portfolio value<b>₹${fmt(d.value)}</b></div>
-    <div class="chip">Expected return<b>${m.expected_return_pct}%</b><span class="muted">annual, historical</span></div>
-    <div class="chip">CAGR<b>${m.cagr_pct}%</b>${hint(bm.cagr)}</div>
-    <div class="chip">Volatility<b>${m.volatility_pct}%</b></div>
-    <div class="chip">Sharpe ratio<b>${m.sharpe??'—'}</b>${hint(bm.sharpe)}</div>
-    <div class="chip">Sortino ratio<b>${m.sortino??'—'}</b>${hint(bm.sortino)}</div>
-    <div class="chip">Diversification<b>${m.diversification_score}/10</b><span class="muted">${m.effective_holdings} eff. holdings</span>${hint(bm.diversification)}</div></div>
+    <div class="chip">${tip('Expected return')}<b>${m.expected_return_pct}%</b><span class="muted">annual, historical</span></div>
+    <div class="chip">${tip('CAGR')}<b>${m.cagr_pct}%</b>${hint(bm.cagr)}</div>
+    <div class="chip">${tip('Volatility')}<b>${m.volatility_pct}%</b></div>
+    <div class="chip">${tip('Sharpe ratio')}<b>${m.sharpe??'—'}</b>${hint(bm.sharpe)}</div>
+    <div class="chip">${tip('Sortino ratio')}<b>${m.sortino??'—'}</b>${hint(bm.sortino)}</div>
+    <div class="chip">${tip('Diversification')}<b>${m.diversification_score}/10</b><span class="muted">${m.effective_holdings} eff. holdings</span>${hint(bm.diversification)}</div></div>
     <p class="muted">${d.note}</p></section>`));
   o.append($(`<section class="glass"><h2>⚠️ Risk analytics</h2>
-    <div class="grid cards"><div class="chip">Portfolio beta<b>${r.portfolio_beta}</b>${hint(bm.beta)}</div>
-    <div class="chip">Alpha (vs ${r.benchmark_name})<b>${r.alpha_pct}%</b>${hint(bm.alpha)}</div>
-    <div class="chip">1-day VaR (95%)<b>₹${fmt(r.var_1d_95_amount)}</b><span class="muted">${r.var_1d_95_pct}%</span>${hint(bm.var)}</div>
-    <div class="chip">CVaR / Exp. Shortfall<b>₹${fmt(r.cvar_1d_95_amount)}</b><span class="muted">${r.cvar_1d_95_pct}%</span>${hint(bm.cvar)}</div>
-    <div class="chip">Max drawdown<b>${r.max_drawdown_pct}%</b>${hint(bm.max_drawdown)}</div>
+    <div class="grid cards"><div class="chip">${tip('Portfolio beta')}<b>${r.portfolio_beta}</b>${hint(bm.beta)}</div>
+    <div class="chip"><span class="tip" data-tip="Return above what beta predicts (Jensen's alpha) vs the index — skill, not just market exposure.">Alpha (vs ${r.benchmark_name})</span><b>${r.alpha_pct}%</b>${hint(bm.alpha)}</div>
+    <div class="chip">${tip('1-day VaR (95%)')}<b>₹${fmt(r.var_1d_95_amount)}</b><span class="muted">${r.var_1d_95_pct}%</span>${hint(bm.var)}</div>
+    <div class="chip">${tip('CVaR / Exp. Shortfall')}<b>₹${fmt(r.cvar_1d_95_amount)}</b><span class="muted">${r.cvar_1d_95_pct}%</span>${hint(bm.cvar)}</div>
+    <div class="chip">${tip('Max drawdown')}<b>${r.max_drawdown_pct}%</b>${hint(bm.max_drawdown)}</div>
     <div class="chip">Sector concentration<b>${r.sector_concentration_pct}%</b>${hint(bm.sector_concentration)}</div></div>
     <h3>Per-stock risk</h3><table><tr><th>Stock</th><th>Weight</th><th>Beta</th><th>Volatility</th><th>Downside dev</th><th>Max DD</th><th>Exp ret</th></tr>
     ${d.per_stock.map(s=>`<tr><td>${s.sym.replace('.NS','')}</td><td>${s.weight_pct}%</td><td>${s.beta??'—'}</td><td>${s.vol_pct}%</td><td>${s.downside_dev_pct??'—'}%</td><td>${s.max_drawdown_pct}%</td><td>${s.exp_return_pct}%</td></tr>`).join('')}</table>
