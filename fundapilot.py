@@ -888,6 +888,26 @@ def quality_score(roe, de, margin, pe, fcf):
     return round(s / n, 1) if n else None
 
 
+def fund_rating(roe_pct, roce_pct, de, pb, npm_pct, eg_pct, pe, profitable):
+    """Strict fundamental rating: rate ONLY when the core metrics are all present; otherwise
+    return (None, reason) so we never inflate a score by silently dropping a missing metric.
+    Loss-makers (negative profit) are hard-capped so a stock like Vodafone Idea can't look 'strong'."""
+    core = {"ROE": roe_pct, "ROCE": roce_pct, "Debt/Equity": de, "Net margin": npm_pct, "P/B": pb}
+    missing = [k for k, v in core.items() if v is None]
+    if missing:
+        return None, "Not rated — missing " + ", ".join(missing)
+    parts = [score(roe_pct, 22, 5), score(roce_pct, 18, 6), score(de, 30, 150),
+             score(npm_pct, 15, 2), score(pb, 1, 8)]
+    if eg_pct is not None:
+        parts.append(score(eg_pct, 20, 0))
+    if pe:
+        parts.append(score(pe, 12, 45))
+    s = round(sum(parts) / len(parts), 1)
+    if not profitable:                      # loss-making → cannot be "fundamentally strong"
+        return min(s, 3.0), "Loss-making — score capped"
+    return s, None
+
+
 def screen_pool(syms, tilt="fundamental"):
     syms = list(dict.fromkeys(syms))[:12]
     mom = {}
@@ -1485,35 +1505,66 @@ def evaluate_holding(sym, buy, horizon, bench_ret6m):
     rs = round(ret6m - bench_ret6m, 1) if (ret6m is not None and bench_ret6m is not None) else None
     pe, roe = _g(info, "trailingPE"), _g(info, "returnOnEquity")
     eg, de, pb = _g(info, "earningsGrowth", "earningsQuarterlyGrowth"), _g(info, "debtToEquity"), _g(info, "priceToBook")
+    npm = _pct(_g(info, "profitMargins"))
     roce, ev_ebitda = inst.get("ROCE %"), inst.get("EV/EBITDA")
     cagr = inst.get("Earnings CAGR 3y %")
-    fs = [s for s in [score(roe * 100, 22, 5) if roe is not None else None,
-                      score(roce, 18, 6) if roce is not None else None,
-                      score(pe, 12, 45) if pe else None,
-                      score(eg * 100, 20, 0) if eg is not None else None,
-                      score(de, 30, 150) if de is not None else None,
-                      score(pb, 1, 8) if pb else None] if s is not None]
-    fund = round(sum(fs) / len(fs), 1) if fs else 5.0
+    profitable = (npm is not None and npm > 0)
+    fund, fund_note = fund_rating(_pct(roe), roce, de, pb, npm, _pct(eg), pe, profitable)
     tech = 5.0 + (2 if above200 else 0) + (1 if (sma50 and sma200 and sma50 > sma200) else 0)
     tech += (1 if rsi14 < 30 else (-1.5 if rsi14 > 70 else 0)) + (1 if (rs and rs > 0) else 0)
     tech = round(max(0, min(10, tech)), 1)
-    health = round(fund * 0.6 + tech * 0.4, 1)  # fundamentals weighted for an investor
-    verdict = "Accumulate" if health >= 7 else ("Hold" if health >= 5.5 else ("Reduce" if health >= 4 else "Exit"))
+    if fund is None:                                  # incomplete fundamentals → don't fake a verdict
+        health, verdict = None, "Insufficient data"
+    else:
+        health = round(fund * 0.6 + tech * 0.4, 1)    # fundamentals weighted for an investor
+        verdict = "Accumulate" if health >= 7 else ("Hold" if health >= 5.5 else ("Reduce" if health >= 4 else "Exit"))
     T = HORIZON_DAYS.get(horizon, 180)
     exp_move_pct = round(dvol * math.sqrt(min(T, 252)) * 100, 1)  # 1σ expected move over the horizon
     sl, tp = round(price - 2 * atr, 2), round(price + 3 * atr, 2)  # ATR stop/target, ~1.5 reward:risk
     out.update({"price": round(price, 2), "rsi": round(rsi14, 1), "above_200dma": above200,
                 "sma_uptrend": bool(sma50 and sma200 and sma50 > sma200), "atr": round(atr, 2),
                 "rel_strength_6m": rs, "pe": pe, "pb": pb, "roe_pct": _pct(roe), "roce_pct": roce,
-                "ev_ebitda": ev_ebitda, "marketCap": _g(info, "marketCap"),
-                "earnings_growth_pct": _pct(eg), "de": de, "earnings_cagr_3y": cagr,
-                "fund_score": fund, "tech_score": tech, "health": health, "verdict": verdict,
+                "net_margin_pct": npm, "ev_ebitda": ev_ebitda, "marketCap": _g(info, "marketCap"),
+                "earnings_growth_pct": _pct(eg), "de": de, "earnings_cagr_3y": cagr, "profitable": profitable,
+                "fund_score": fund, "fund_note": fund_note, "tech_score": tech, "health": health, "verdict": verdict,
                 "pnl_pct": round((price / buy - 1) * 100, 1) if buy else None,
                 "sl": sl, "sl_pct": round((sl / price - 1) * 100, 1),
                 "tp": tp, "tp_pct": round((tp / price - 1) * 100, 1), "expected_move_pct": exp_move_pct,
                 "sl_buy": round(buy - 2 * atr, 2) if buy else None,
                 "tp_buy": round(buy + 3 * atr, 2) if buy else None})
     return out
+
+
+def peer_metrics(sym):
+    """Fundamentals for a peer, computed from REAL statements (works on cloud) and rated only
+    when the full metric set is present (else quality=None — never a partial/inflated score)."""
+    t = yf.Ticker(sym)
+    info = dict(get_info(sym))
+    fast = _fast(t)
+    fin = bs = None
+    try: fin = t.financials
+    except Exception: pass
+    try: bs = t.balance_sheet
+    except Exception: pass
+    price, mom = fast.get("last_price"), None
+    try:
+        hh = t.history(period="6mo")["Close"].dropna()
+        if len(hh) > 5:
+            if price is None:
+                price = float(hh.iloc[-1])
+            mom = round(float(hh.iloc[-1] / hh.iloc[0] - 1) * 100, 1)
+    except Exception:
+        pass
+    for k, v in _compute_fundamentals(fin, bs, None, fast, price, None).items():
+        if _g(info, k) is None and v is not None:
+            info[k] = v
+    inst = institutional_metrics(fin, bs, None, _g(info, "marketCap"), _g(info, "ebitda"), None)
+    pe, roe, roce = _g(info, "trailingPE"), _pct(_g(info, "returnOnEquity")), inst.get("ROCE %")
+    de, pb, npm = _g(info, "debtToEquity"), _g(info, "priceToBook"), _pct(_g(info, "profitMargins"))
+    eg = _pct(_g(info, "earningsGrowth", "earningsQuarterlyGrowth"))
+    q, note = fund_rating(roe, roce, de, pb, npm, eg, pe, (npm is not None and npm > 0))
+    return {"ticker": sym, "name": _g(info, "shortName", "longName") or sym, "pe": pe, "roe": roe,
+            "roce": roce, "de": de, "pb": pb, "net_margin": npm, "momentum_6m": mom, "quality": q, "rating_note": note}
 
 
 def portfolio_eval(holdings, horizon, extra_capital):
@@ -1537,8 +1588,11 @@ def portfolio_eval(holdings, horizon, extra_capital):
     total = sum(e["value"] for e in valid) or 1
     for e in valid:
         e["weight_pct"] = round(e["value"] / total * 100, 1)
-    overall_health = round(sum(e["health"] * e["value"] for e in valid) / total, 1)
-    overall_verdict = "Healthy" if overall_health >= 6.5 else ("Mixed — prune the weak names" if overall_health >= 5 else "Needs work — several holdings underperform")
+    rated = [e for e in valid if e["health"] is not None]
+    rval = sum(e["value"] for e in rated) or 1
+    overall_health = round(sum(e["health"] * e["value"] for e in rated) / rval, 1) if rated else None
+    overall_verdict = ("Not rated — incomplete data" if overall_health is None else
+                       "Healthy" if overall_health >= 6.5 else ("Mixed — prune the weak names" if overall_health >= 5 else "Needs work — several holdings underperform"))
     blended_cagr = [e["earnings_cagr_3y"] for e in valid if e.get("earnings_cagr_3y") is not None]
     port_cagr = round(float(np.median(blended_cagr)), 1) if blended_cagr else None
 
@@ -1559,30 +1613,14 @@ def portfolio_eval(holdings, horizon, extra_capital):
 
     to_trim = [e for e in valid if e["verdict"] in ("Reduce", "Exit")]
     to_add = [e for e in valid if e["verdict"] == "Accumulate"]
+    weak = [e for e in valid if e["verdict"] in ("Reduce", "Exit")]
     freed = sum(e["value"] * (0.5 if e["verdict"] == "Reduce" else 1.0) for e in to_trim)
-
-    # peer comparison for EVERY holding (best names in its sector) + substitutes for the weak ones.
-    # Each unique sector is screened once (real-statement fundamentals) to keep it fast.
-    screened, peer_compare, subs = {}, {}, {}
-    for e in valid:
-        peers, sec = find_peers(e["sym"], e.get("sector"))
-        if not peers:
-            continue
-        if sec not in screened:
-            screened[sec] = screen_pool([p for p in peers if p != e["sym"]][:6], "fundamental")
-        top = screened[sec]
-        better = [r for r in top if (r.get("quality") or 0) > (e["fund_score"] or 0)]
-        peer_compare[e["sym"]] = {"sector": sec, "holding_quality": e["fund_score"],
-                                  "best": top[0]["ticker"] if top else None,
-                                  "top_peers": [{"ticker": r["ticker"], "name": r["name"], "quality": r["quality"],
-                                                 "pe": r["pe"], "roe": r["roe"], "momentum_6m": r["momentum_6m"]} for r in top[:4]]}
-        if e["verdict"] in ("Reduce", "Exit") and better:
-            subs[e["sym"]] = {"sector": sec, "picks": peer_compare[e["sym"]]["top_peers"][:3]}
+    # Full peer comparison is done on demand per sector via /peer_eval (real statements, fast).
 
     have = extra_capital > 0
     plan = []
     if have:
-        targets = to_add or [e for e in valid if e["health"] >= 6]
+        targets = to_add or [e for e in valid if (e["health"] or 0) >= 6]
         if targets:
             per = round(extra_capital / len(targets))
             plan.append(f"💰 You have ₹{extra_capital:,.0f} to deploy → add ≈₹{per:,} to each of: " +
@@ -1619,34 +1657,58 @@ def portfolio_eval(holdings, horizon, extra_capital):
         nm = s["sector"]
         sector_news[nm] = google_news(f"{nm} sector India outlook policy", n=3)
 
-    # --- decisive "if I were you" final verdict ---
+    # --- decisive, explained "if I were you" final verdict ---
     def nm(e): return e["sym"].replace(".NS", "").replace(".BO", "")
     sell = [e for e in valid if e["verdict"] == "Exit"]
     trim = [e for e in valid if e["verdict"] == "Reduce"]
     avg_down = [e for e in to_add if e.get("pnl_pct") is not None and e["pnl_pct"] < 0]
     add_more = [e for e in to_add if e not in avg_down]
-    switch = [(s, v["picks"][0]) for s, v in subs.items() if v.get("picks")]
-    fv = []
-    if sell: fv.append(f"Sell {', '.join(nm(e) for e in sell)} — weak fundamentals and downtrend; the capital works harder elsewhere.")
-    if trim: fv.append(f"Trim {', '.join(nm(e) for e in trim)} by ~half — keep a toe in but cut the dead weight.")
-    if conc > 30: fv.append(f"Cut {sectors[0]['sector']} from {conc}% toward ≤30% — that single-sector bet is your biggest risk.")
-    if avg_down: fv.append(f"Average down {', '.join(nm(e) for e in avg_down)} — thesis intact and they're below your buy.")
-    if add_more: fv.append(f"Add to {', '.join(nm(e) for e in add_more)} — strongest names; let winners run.")
-    if switch: fv.append("Upgrade quality: swap " + "; ".join(f"{s.replace('.NS','')} → {p['ticker'].replace('.NS','')}" for s, p in switch[:3]) + " (higher-quality same-sector peers).")
-    if not fv: fv.append("Hold — the book is healthy and balanced; no action beats activity here. Re-check after the next results season.")
+    hold = [e for e in valid if e["verdict"] == "Hold"]
+    unrated = [e for e in valid if e["verdict"] == "Insufficient data"]
     lead = rotation[0]["sector"] if rotation else None
-    headline = (f"If I were you: this is a **{overall_verdict.lower()}** book ({overall_health}/10). "
-                + ("Top priority — " + fv[0] + " " if fv else "")
-                + (f"Lean new money toward the leading sector ({lead}). " if lead else "")
-                + "Then set the SL/TP below and let the thesis — not noise — decide exits.")
+    fv = []
+    if sell:
+        fv.append({"do": "Sell fully: " + ", ".join(nm(e) for e in sell),
+                   "why": "These failed the fundamental bar (loss-making, or weak ROCE/ROE) AND the chart is below its 200-day average. You're tying capital up in a falling, low-quality asset. Exit and move the money to your strongest names below."})
+    if trim:
+        fv.append({"do": "Trim ~half: " + ", ".join(nm(e) for e in trim),
+                   "why": "Mediocre quality or stretched technicals — not a conviction buy. Halving banks some gains and cuts risk while keeping a small stake in case the story improves."})
+    if conc > 30:
+        fv.append({"do": f"Diversify — cut {sectors[0]['sector']} from {conc}% to ≤30%",
+                   "why": f"Over a third of your book rides on one sector; one bad cycle or policy there hits everything at once. Sell the weakest name in that sector first, then spread into the current leaders ({', '.join(r['sector'] for r in rotation[:2]) if rotation else 'stronger sectors'})."})
+    if avg_down:
+        adl = ", ".join(nm(e) + " (" + str(e["pnl_pct"]) + "%)" for e in avg_down)
+        fv.append({"do": "Average down (in 2–3 tranches): " + adl,
+                   "why": "These score well on fundamentals AND trade below your buy price — adding lowers your average cost on a name you'd happily buy fresh today. Stagger the buys; don't deploy it all in one go."})
+    if add_more:
+        fv.append({"do": "Add / let run: " + ", ".join(nm(e) for e in add_more),
+                   "why": "Your strongest names (high health, in an uptrend). Put new cash here first, and resist trimming a winner just because it's up."})
+    if unrated:
+        fv.append({"do": "Research before acting: " + ", ".join(nm(e) for e in unrated),
+                   "why": "I couldn't fetch the full set of fundamentals for these, so I won't fake a verdict. Pull the latest annual report / quarterly result before deciding."})
+    if not (sell or trim or avg_down or add_more) and hold:
+        fv.append({"do": "Hold: " + ", ".join(nm(e) for e in hold),
+                   "why": "Decent but not compelling in either direction — no action needed. Activity for its own sake just adds cost and tax. Re-check after the next results season."})
+    if not fv:
+        fv.append({"do": "Hold everything", "why": "The book is healthy and balanced; nothing to do right now."})
+    hl = "This is a **" + (overall_verdict.split("—")[0].strip().lower()) + "** book"
+    if overall_health is not None:
+        hl += f" scoring **{overall_health}/10**"
+    hl += ". Your single biggest move: **" + fv[0]["do"] + "**. "
+    if conc > 30:
+        hl += f"Your biggest *risk* is the **{conc}% weight in {sectors[0]['sector']}** — fix concentration before chasing returns. "
+    if lead:
+        hl += f"Point any new money at the leading sector right now (**{lead}**). "
+    hl += "Set each holding's SL/TP below; for your horizon the real reason to exit is the thesis breaking (verdict turns Reduce/Exit), not a normal price wobble."
 
     return {"horizon": horizon, "extra_capital": extra_capital, "total_value": round(total),
             "overall_health": overall_health, "overall_verdict": overall_verdict, "portfolio_earnings_cagr": port_cagr,
-            "holdings": sorted(valid, key=lambda e: -e["health"]), "errors": [e["sym"] for e in evals if "error" in e],
+            "holdings": sorted(valid, key=lambda e: -(e["health"] if e["health"] is not None else -1)),
+            "errors": [e["sym"] for e in evals if "error" in e],
             "sectors": sectors, "concentration_pct": conc, "sector_rotation": rotation,
             "to_trim": [e["sym"] for e in to_trim], "to_add": [e["sym"] for e in to_add],
-            "freed_capital": round(freed), "substitutes": subs, "peer_compare": peer_compare,
-            "final_verdict": {"headline": headline, "actions": fv}, "plan": plan, "steps": steps, "sector_news": sector_news,
+            "freed_capital": round(freed),
+            "final_verdict": {"headline": hl, "actions": fv}, "plan": plan, "steps": steps, "sector_news": sector_news,
             "note": "Per-stock health = 60% fundamentals + 40% technicals. SL = price−2×ATR(14), TP = price+3×ATR (≈1.5 reward:risk); "
                     "expected move = daily σ × √(horizon trading days) = a 1-standard-deviation range. News/policy is qualitative — use it to "
                     "widen/tighten these levels and to confirm a Reduce/Exit. Educational only."}
@@ -1720,6 +1782,18 @@ def optimize():
         return jresp(portfolio_analytics(holdings, float(d.get("extra_capital") or 0)))
     except Exception as e:
         return jresp({"error": f"Optimization failed: {e}"}, 500)
+
+
+@app.route("/peer_eval")
+def peer_eval_route():
+    country = request.args.get("country", "India")
+    sector = request.args.get("sector")
+    exclude = clean_ticker(request.args.get("exclude"))
+    peers, sec = find_peers(exclude, sector)
+    syms = [p for p in peers if p != exclude][:5]
+    rows = [peer_metrics(s) for s in syms]
+    rows.sort(key=lambda r: -(r["quality"] if r["quality"] is not None else -1))
+    return jresp({"sector": sec, "exclude": exclude, "rows": rows})
 
 
 @app.route("/portfolio_eval", methods=["POST"])
@@ -2385,6 +2459,15 @@ async function loadTechnicals(ticker,cur,tf){const box=el('taout');if(!box)retur
   h+=`<p class="muted">${t.note}</p>`;
   box.innerHTML=h;drawTA('cTA',t);}
 
+async function loadPeerEval(sector,sym,hq,cid,cache){const box=el(cid);if(!box)return;
+  let data=cache[sector];
+  if(!data){try{data=await(await fetch(`/peer_eval?country=India&sector=${encodeURIComponent(sector)}&exclude=${encodeURIComponent(sym)}`)).json();}catch(e){box.innerHTML='<span class="muted">Peers unavailable.</span>';return;}cache[sector]=data;}
+  const rows=(data.rows||[]).filter(r=>r.ticker!==sym);
+  if(!rows.length){box.innerHTML='<span class="muted">No mapped sector peers.</span>';return;}
+  let t=`<details><summary>⚖️ Compare with best in ${esc(data.sector||sector)} (peers)</summary><table style="margin-top:6px"><tr><th>Peer</th><th>Quality</th><th>P/E</th><th>ROE%</th><th>ROCE%</th><th>D/E%</th><th>6m%</th></tr>`;
+  rows.forEach(p=>{const better=(p.quality!=null&&hq!=null&&p.quality>hq);
+    t+=`<tr><td>${better?'⭐ ':''}${esc(p.name||p.ticker)} <span class="muted">${p.ticker.replace('.NS','')}</span></td><td class="${better?'pos':''}">${p.quality==null?'<span class="muted">n/r</span>':p.quality}</td><td>${fmt(p.pe)}</td><td>${fmt(p.roe)}</td><td>${fmt(p.roce)}</td><td>${fmt(p.de)}</td><td>${fmt(p.momentum_6m)}</td></tr>`;});
+  box.innerHTML=t+`</table><div class="muted" style="margin-top:4px">⭐ = higher fundamental quality than ${esc(sym.replace('.NS','').replace('.BO',''))} (${hq==null?'not rated':hq+'/10'}). "n/r" = peer left unrated (missing a metric). All from real statements.</div></details>`;}
 function drawTA(id,t){const c=t.chart,base=c.base;
   const pts=[];(t.patterns||[]).forEach(p=>(p.points||[]).forEach(idx=>{const j=idx-base;if(j>=0&&j<c.close.length)pts.push({x:c.dates[j],y:c.close[j]});}));
   charts.push(new Chart(el(id),{data:{labels:c.dates,datasets:[
@@ -2461,27 +2544,32 @@ function renderEval(d){const o=el('t-eval-out');o.innerHTML='';
     <div class="chip">Overall health<b>${d.overall_health}/10</b></div>
     <div class="chip">Verdict<b><span class="verdict ${oc}">${d.overall_verdict}</span></b></div>
     <div class="chip">Blended earnings CAGR<b>${d.portfolio_earnings_cagr==null?'—':d.portfolio_earnings_cagr+'%'}</b><span class="muted">vs NIFTY ~12%</span></div></div></section>`));
-  // decisive final verdict
+  // decisive final verdict (headline + numbered actions with the WHY/HOW for each)
   if(d.final_verdict){const fvh=esc(d.final_verdict.headline).replace(/\*\*(.+?)\*\*/g,'<b>$1</b>');
     o.append($(`<section class="glass"><h2>🧠 If I were you — final verdict</h2>
-      <div class="rec" style="font-size:15px">${fvh}</div>
-      <div style="margin-top:10px">${d.final_verdict.actions.map((a,i)=>`<div class="flag ${/Sell|Trim|Cut/i.test(a)?'f-bad':'f-good'}"><b>${i+1}.</b> ${esc(a)}</div>`).join('')}</div></section>`));}
+      <div class="rec" style="font-size:15px;line-height:1.6">${fvh}</div>
+      <h3>Step by step — what I'd do &amp; why</h3>
+      <div>${d.final_verdict.actions.map((a,i)=>`<div class="flag ${/sell|trim|diversify|cut|research/i.test(a.do)?'f-bad':'f-good'}" style="margin:8px 0">
+        <div><b>${i+1}. ${esc(a.do)}</b></div><div style="font-size:13px;margin-top:3px" class="muted">${esc(a.why)}</div></div>`).join('')}</div>
+      <p class="muted">Each call blends fundamentals (60%) and technicals (40%). A loss-making company can't score "strong" no matter how the chart looks; if a metric is missing the stock is left <b>Not rated</b> rather than guessed.</p></section>`));}
   // how to rebalance — explicit steps + the situational plan
   o.append($(`<section class="glass"><h2>🔁 How to rebalance</h2>
     <ol style="line-height:1.7;padding-left:20px">${(d.steps||[]).map(s=>`<li>${s}</li>`).join('')}</ol>
     <h3>Right now</h3>${d.plan.map(x=>`<div class="flag ${x.indexOf('⚠')>-1?'f-bad':'f-good'}">${x}</div>`).join('')}</section>`));
   // per-stock: separate fundamentals + technicals sections
   let h='<section class="glass"><h2>🔬 Holdings evaluated</h2>';
-  d.holdings.forEach(e=>{const sym=e.sym.replace('.NS','').replace('.BO','');
+  d.holdings.forEach((e,i)=>{const sym=e.sym.replace('.NS','').replace('.BO','');
+    const vcls2=e.verdict==='Accumulate'?'v-under':(e.verdict==='Exit'||e.verdict==='Reduce')?'v-over':'v-fair';
     h+=`<div class="chip" style="margin-bottom:12px;background:#0c1426">
       <div style="display:flex;justify-content:space-between;flex-wrap:wrap;align-items:center">
-        <b style="font-size:16px">${sym} <span class="muted" style="font-weight:400">${e.weight_pct}% of book</span></b>
-        <span>Health <b>${e.health}/10</b> · <span class="verdict ${e.verdict==='Accumulate'?'v-under':(e.verdict==='Exit'||e.verdict==='Reduce')?'v-over':'v-fair'}">${e.verdict}</span> · P&L <span class="${e.pnl_pct>=0?'pos':'neg'}">${e.pnl_pct==null?'—':(e.pnl_pct>=0?'+':'')+e.pnl_pct+'%'}</span></span></div>
+        <b style="font-size:16px">${esc(sym)} <span class="muted" style="font-weight:400">${e.weight_pct}% of book</span></b>
+        <span>Health <b>${e.health==null?'—':e.health+'/10'}</b> · <span class="verdict ${vcls2}">${esc(e.verdict)}</span> · P&L <span class="${e.pnl_pct>=0?'pos':'neg'}">${e.pnl_pct==null?'—':(e.pnl_pct>=0?'+':'')+e.pnl_pct+'%'}</span></span></div>
+      ${e.fund_note?`<div class="muted" style="margin-top:4px">⚠️ ${esc(e.fund_note)}${e.profitable===false?' (loss-making)':''}</div>`:''}
       <div class="grid two" style="margin-top:10px">
-        <div><h3 style="margin-top:0">Fundamentals — ${e.fund_score}/10</h3>
+        <div><h3 style="margin-top:0">Fundamentals — ${e.fund_score==null?'not rated':e.fund_score+'/10'}</h3>
           <div class="kv">P/E: <b>${fmt(e.pe)}</b> · P/B: <b>${fmt(e.pb)}</b></div>
           <div class="kv">ROE: <b>${e.roe_pct==null?'—':e.roe_pct+'%'}</b> · ROCE: <b>${e.roce_pct==null?'—':e.roce_pct+'%'}</b></div>
-          <div class="kv">EV/EBITDA: <b>${fmt(e.ev_ebitda)}</b></div>
+          <div class="kv">Net margin: <b>${e.net_margin_pct==null?'—':e.net_margin_pct+'%'}</b> · EV/EBITDA: <b>${fmt(e.ev_ebitda)}</b></div>
           <div class="kv">Earnings growth (1y): <b>${e.earnings_growth_pct==null?'—':e.earnings_growth_pct+'%'}</b> · CAGR 3y: <b>${e.earnings_cagr_3y==null?'—':e.earnings_cagr_3y+'%'}</b></div>
           <div class="kv">Debt/Equity: <b>${e.de==null?'—':e.de+'%'}</b></div></div>
         <div><h3 style="margin-top:0">Technicals — ${e.tech_score}/10</h3>
@@ -2492,20 +2580,13 @@ function renderEval(d){const o=el('t-eval-out');o.innerHTML='';
       <div class="grid two" style="margin-top:6px">
         <div class="kv">From <b>current ₹${fmt(e.price)}</b>: SL <span class="neg">₹${fmt(e.sl)} (${e.sl_pct}%)</span> · TP <span class="pos">₹${fmt(e.tp)} (+${e.tp_pct}%)</span></div>
         <div class="kv">From <b>your avg ₹${fmt(e.buy)}</b>: SL <span class="neg">₹${fmt(e.sl_buy)}</span> · TP <span class="pos">₹${fmt(e.tp_buy)}</span></div></div>
+      <div id="peer-${i}" style="margin-top:8px"><span class="muted">Loading sector peers…</span></div>
     </div>`;});
-  o.append($(h+'<p class="muted">Each holding scored on its own: fundamentals (60%) + technicals (40%) → health. SL/TP from ATR(14), shown from both the current price and your average buy price.</p></section>'));
-  // peer comparison for every holding
-  if(d.peer_compare&&Object.keys(d.peer_compare).length){let pc='<section class="glass"><h2>⚖️ Peer comparison — each holding vs the best in its sector</h2>';
-    for(const[sym,o2]of Object.entries(d.peer_compare)){const me=sym.replace('.NS','').replace('.BO','');
-      pc+=`<h3>${me} <span class="muted">(quality ${o2.holding_quality}/10) · ${o2.sector}</span></h3><table><tr><th>Sector peer</th><th>Quality</th><th>P/E</th><th>ROE%</th><th>6m%</th></tr>`;
-      (o2.top_peers||[]).forEach(p=>{const better=(p.quality||0)>(o2.holding_quality||0);pc+=`<tr><td>${better?'⭐ ':''}${esc(p.name||p.ticker)} <span class="muted">${p.ticker.replace('.NS','')}</span></td><td class="${better?'pos':''}">${p.quality??'—'}</td><td>${fmt(p.pe)}</td><td>${fmt(p.roe)}</td><td>${fmt(p.momentum_6m)}</td></tr>`;});
-      pc+='</table>';}
-    o.append($(pc+'<p class="muted">⭐ = a same-sector name scoring higher on fundamental quality (real-statement based) than your holding. Use it to decide whether to upgrade.</p></section>'));}
-  // substitutes (the clear upgrade for weak holdings)
-  if(d.substitutes&&Object.keys(d.substitutes).length){let s='<section class="glass"><h2>🔁 Recommended upgrades (weak holdings)</h2>';
-    for(const[sym,o2]of Object.entries(d.substitutes)){s+=`<h3>${sym.replace('.NS','')} → stronger ${o2.sector} names</h3><table><tr><th>Candidate</th><th>Quality</th><th>P/E</th><th>ROE%</th><th>6m%</th></tr>`;
-      o2.picks.forEach(p=>s+=`<tr><td>${esc(p.name||p.ticker)} <span class="muted">${p.ticker.replace('.NS','')}</span></td><td>${p.quality??'—'}</td><td>${fmt(p.pe)}</td><td>${fmt(p.roe)}</td><td>${fmt(p.momentum_6m)}</td></tr>`);s+='</table>';}
-    o.append($(s+'<p class="muted">Same-sector names scoring higher on quality than the holding they\'d replace. Confirm before switching.</p></section>'));}
+  o.append($(h+'<p class="muted">Each holding scored on its own: fundamentals (60%) + technicals (40%). A loss-making name is capped (can\'t be "strong"); if a core metric is missing it\'s left <b>not rated</b> rather than guessed. SL/TP from ATR(14), shown from current price AND your average buy.</p></section>'));
+  // per-holding peer comparison loaded on demand (real statements, each sector fetched once)
+  const peerCache={};
+  d.holdings.forEach((e,i)=>{const sec=e.sector;if(!sec){el('peer-'+i).innerHTML='<span class="muted">No sector mapped.</span>';return;}
+    loadPeerEval(sec,e.sym,e.fund_score,'peer-'+i,peerCache);});
   // sector mix + rotation + news
   let sc='<section class="glass"><h2>🧭 Sector mix &amp; rotation</h2><div class="grid two"><div><h3>Your sector weights</h3>';
   sc+=d.sectors.map(s=>`<div class="kv">${s.sector}: <b>${s.pct}%</b>${s.pct>30?' <span class="neg">(concentrated)</span>':''}</div>`).join('');
@@ -2582,10 +2663,17 @@ function renderOptimize(d){const m=d.mpt,r=d.risk,bm=d.benchmarks,o=el('t-opt-ou
   drawMC('cMC',mc,d.value);drawEF('cEF',d.efficient_frontier);
   // rebalancing
   const ef=d.efficient_frontier.max_sharpe;
-  let rb=`<section class="glass"><h2>♻️ Rebalancing — toward max-Sharpe mix</h2><p class="muted">Target = the max-Sharpe portfolio (best return per unit risk: ${ef.ret}% return, ${ef.vol}% vol, Sharpe ${ef.sharpe}). Trades use ₹${fmt(d.value+(d.extra_capital||0))} (value${d.extra_capital?' + ₹'+fmt(d.extra_capital)+' extra':''}).</p>
+  let rb=`<section class="glass"><h2>♻️ Rebalancing (quant — max-Sharpe target)</h2>
+    <p class="muted">This is the <b>mathematical</b> rebalance: it shifts weights toward the <b>max-Sharpe portfolio</b> — the mix with the best historical return per unit of risk (target: ${ef.ret}% return, ${ef.vol}% vol, Sharpe ${ef.sharpe}). Trades use ₹${fmt(d.value+(d.extra_capital||0))} (value${d.extra_capital?' + ₹'+fmt(d.extra_capital)+' extra':''}). For the <b>fundamentals-driven</b> "what to sell/add and why", see the 🎯 Evaluate &amp; rebalance section.</p>
     <table><tr><th>Stock</th><th>Current</th><th>Target</th><th>Action</th><th>Amount</th></tr>`;
   d.rebalance.forEach(x=>rb+=`<tr><td>${x.sym.replace('.NS','')}</td><td>${x.current_pct}%</td><td>${x.target_pct}%</td><td>${x.action==='Buy'?'<span class="pos">Buy</span>':'<span class="neg">Trim</span>'}</td><td>₹${fmt(x.amount)}</td></tr>`);
-  o.append($(rb+'</table><p class="muted">Max-Sharpe weights are unconstrained (can concentrate). Treat as a direction, not a mandate; keep position limits.</p></section>'));}
+  o.append($(rb+`</table><table style="margin-top:10px"><tr><th>Benchmark</th><th>This portfolio</th><th>Healthy range</th></tr>
+    <tr><td>Sharpe ratio</td><td>${m.sharpe??'—'}</td><td>&gt;1 good, &gt;2 excellent</td></tr>
+    <tr><td>Volatility (annual)</td><td>${m.volatility_pct}%</td><td>lower is calmer; equity ~15–25%</td></tr>
+    <tr><td>Max drawdown</td><td>${r.max_drawdown_pct}%</td><td>smaller is safer</td></tr>
+    <tr><td>Diversification</td><td>${m.effective_holdings} eff. holdings</td><td>&gt;5 is well-spread</td></tr>
+    <tr><td>Sector concentration</td><td>${r.sector_concentration_pct}%</td><td>keep any sector &lt;30%</td></tr></table>
+    <p class="muted">Max-Sharpe weights are unconstrained (can concentrate). Treat as a direction, not a mandate; keep position limits.</p></section>`));}
 
 async function loadPortNews(){const p=loadPort();if(!p.length){el('t-news').innerHTML='';return;}
   const news=await(await fetch('/portfolio_news?tickers='+encodeURIComponent(p.map(h=>h.sym).join(',')))).json();
