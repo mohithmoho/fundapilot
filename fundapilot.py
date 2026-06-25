@@ -1399,6 +1399,155 @@ def industry_pe(ticker, sector):
             "note": "Median trailing P/E of sector peers. Local vs global shows whether the whole industry is re-rated worldwide."}
 
 
+# ---------------------------- portfolio evaluation & smart rebalancing ----------------------------
+HORIZON_DAYS = {"short": 60, "medium": 180, "long": 365}
+
+
+def evaluate_holding(sym, buy, horizon, bench_ret6m):
+    """Evaluate one holding like a standalone stock: fundamentals + technicals → health/verdict,
+    plus statistical SL/TP (ATR + 1σ horizon move) and P&L vs the average buy price."""
+    info = get_info(sym)
+    out = {"sym": sym, "name": _g(info, "shortName", "longName") or sym, "buy": buy, "sector": _g(info, "sector")}
+    try:
+        df = yf.Ticker(sym).history(period="1y").dropna()
+    except Exception:
+        df = None
+    if df is None or len(df) < 60:
+        out["error"] = "no price data"; return out
+    c, h, l = df["Close"], df["High"], df["Low"]
+    price = float(c.iloc[-1])
+    rsi14 = float(rsi(c).iloc[-1])
+    sma50 = float(c.rolling(50).mean().iloc[-1])
+    sma200 = float(c.rolling(200).mean().iloc[-1]) if len(c) >= 200 else None
+    above200 = bool(sma200 is not None and price > sma200)
+    tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
+    atr = float(tr.rolling(14).mean().iloc[-1])
+    dvol = float(c.pct_change().std())
+    ret6m = float(c.iloc[-1] / c.iloc[-126] - 1) * 100 if len(c) > 126 else None
+    rs = round(ret6m - bench_ret6m, 1) if (ret6m is not None and bench_ret6m is not None) else None
+    pe, roe = _g(info, "trailingPE"), _g(info, "returnOnEquity")
+    eg, de, pb = _g(info, "earningsGrowth", "earningsQuarterlyGrowth"), _g(info, "debtToEquity"), _g(info, "priceToBook")
+    fs = [s for s in [score(roe * 100, 22, 5) if roe is not None else None,
+                      score(pe, 12, 45) if pe else None,
+                      score(eg * 100, 20, 0) if eg is not None else None,
+                      score(de, 30, 150) if de is not None else None,
+                      score(pb, 1, 8) if pb else None] if s is not None]
+    fund = round(sum(fs) / len(fs), 1) if fs else 5.0
+    tech = 5.0 + (2 if above200 else 0) + (1 if (sma50 and sma200 and sma50 > sma200) else 0)
+    tech += (1 if rsi14 < 30 else (-1.5 if rsi14 > 70 else 0)) + (1 if (rs and rs > 0) else 0)
+    tech = round(max(0, min(10, tech)), 1)
+    health = round(fund * 0.6 + tech * 0.4, 1)  # fundamentals weighted for an investor
+    verdict = "Accumulate" if health >= 7 else ("Hold" if health >= 5.5 else ("Reduce" if health >= 4 else "Exit"))
+    T = HORIZON_DAYS.get(horizon, 180)
+    exp_move_pct = round(dvol * math.sqrt(min(T, 252)) * 100, 1)  # 1σ expected move over the horizon
+    sl, tp = round(price - 2 * atr, 2), round(price + 3 * atr, 2)  # ATR stop/target, ~1.5 reward:risk
+    cagr = None
+    try:
+        ni = _srow(yf.Ticker(sym).financials, "Net Income", "Net Income Common Stockholders")
+        if ni is not None and len(ni) > 3 and float(ni.iloc[3]) > 0:
+            cagr = round(((float(ni.iloc[0]) / float(ni.iloc[3])) ** (1 / 3) - 1) * 100, 1)
+    except Exception:
+        pass
+    out.update({"price": round(price, 2), "rsi": round(rsi14, 1), "above_200dma": above200,
+                "sma_uptrend": bool(sma50 and sma200 and sma50 > sma200), "atr": round(atr, 2),
+                "rel_strength_6m": rs, "pe": pe, "roe_pct": _pct(roe), "earnings_growth_pct": _pct(eg),
+                "de": de, "earnings_cagr_3y": cagr, "fund_score": fund, "tech_score": tech,
+                "health": health, "verdict": verdict,
+                "pnl_pct": round((price / buy - 1) * 100, 1) if buy else None,
+                "sl": sl, "sl_pct": round((sl / price - 1) * 100, 1),
+                "tp": tp, "tp_pct": round((tp / price - 1) * 100, 1), "expected_move_pct": exp_move_pct})
+    return out
+
+
+def portfolio_eval(holdings, horizon, extra_capital):
+    holdings = holdings[:10]
+    indian = any(h["sym"].endswith((".NS", ".BO")) for h in holdings)
+    bench = "^NSEI" if indian else "^GSPC"
+    bench_ret6m = None
+    try:
+        bc = yf.Ticker(bench).history(period="1y")["Close"].dropna()
+        if len(bc) > 126:
+            bench_ret6m = float(bc.iloc[-1] / bc.iloc[-126] - 1) * 100
+    except Exception:
+        pass
+    evals = [evaluate_holding(h["sym"], h.get("buy", 0), horizon, bench_ret6m) for h in holdings]
+    valid = [e for e in evals if "error" not in e]
+    if not valid:
+        return {"error": "Couldn't fetch data for these holdings."}
+    qty = {h["sym"]: h.get("qty", 0) for h in holdings}
+    for e in valid:
+        e["value"] = round(e["price"] * qty.get(e["sym"], 0))
+    total = sum(e["value"] for e in valid) or 1
+    for e in valid:
+        e["weight_pct"] = round(e["value"] / total * 100, 1)
+    overall_health = round(sum(e["health"] * e["value"] for e in valid) / total, 1)
+    overall_verdict = "Healthy" if overall_health >= 6.5 else ("Mixed — prune the weak names" if overall_health >= 5 else "Needs work — several holdings underperform")
+    blended_cagr = [e["earnings_cagr_3y"] for e in valid if e.get("earnings_cagr_3y") is not None]
+    port_cagr = round(float(np.median(blended_cagr)), 1) if blended_cagr else None
+
+    secw = {}
+    for e in valid:
+        secw[e.get("sector") or "Other"] = secw.get(e.get("sector") or "Other", 0) + e["value"]
+    sectors = [{"sector": k, "pct": round(v / total * 100, 1)} for k, v in sorted(secw.items(), key=lambda x: -x[1])]
+    conc = sectors[0]["pct"] if sectors else 0
+    rotation = []
+    for label, sym in IDX_SECTOR.items():
+        try:
+            hh = yf.Ticker(sym).history(period="1mo")["Close"].dropna()
+            if len(hh) > 2:
+                rotation.append({"sector": label, "ret_1m_pct": round(float(hh.iloc[-1] / hh.iloc[0] - 1) * 100, 1)})
+        except Exception:
+            pass
+    rotation.sort(key=lambda x: -x["ret_1m_pct"])
+
+    to_trim = [e for e in valid if e["verdict"] in ("Reduce", "Exit")]
+    to_add = [e for e in valid if e["verdict"] == "Accumulate"]
+    freed = sum(e["value"] * (0.5 if e["verdict"] == "Reduce" else 1.0) for e in to_trim)
+
+    subs = {}
+    for e in to_trim[:4]:
+        peers, sec = find_peers(e["sym"], e.get("sector"))
+        if peers and e["sym"] not in subs:
+            ranked = screen_pool([p for p in peers if p != e["sym"]], "fundamental")[:3]
+            picks = [{"ticker": r["ticker"], "name": r["name"], "quality": r["quality"], "pe": r["pe"], "roe": r["roe"], "momentum_6m": r["momentum_6m"]}
+                     for r in ranked if (r.get("quality") or 0) > (e["fund_score"] or 0)]
+            if picks:
+                subs[e["sym"]] = {"sector": sec, "picks": picks}
+
+    have = extra_capital > 0
+    plan = []
+    if have:
+        targets = to_add or [e for e in valid if e["health"] >= 6]
+        if targets:
+            per = round(extra_capital / len(targets))
+            plan.append(f"💰 You have ₹{extra_capital:,.0f} to deploy → add ≈₹{per:,} to each of: " +
+                        ", ".join(t["sym"].replace(".NS", "") for t in targets) + ".")
+        under = [e for e in valid if e.get("pnl_pct") is not None and e["pnl_pct"] < 0 and e["verdict"] == "Accumulate"]
+        if under:
+            plan.append("📉 Average down (thesis intact but price is below your buy): " +
+                        ", ".join(f"{e['sym'].replace('.NS','')} ({e['pnl_pct']}%)" for e in under) + ".")
+    else:
+        if to_trim:
+            plan.append("🔁 No fresh cash → rebalance from within: trim/exit " +
+                        ", ".join(e["sym"].replace(".NS", "") for e in to_trim) +
+                        f" (frees ≈₹{round(freed):,}), then redeploy into " +
+                        (", ".join(t["sym"].replace(".NS", "") for t in to_add) or "your strongest holdings") + ".")
+        else:
+            plan.append("✅ No fresh cash and no weak names — hold. Only rebalance if a single sector exceeds ~30%.")
+    if conc > 30 and rotation:
+        plan.append(f"⚠️ {sectors[0]['sector']} is {conc}% of the book — concentration risk. Leading sectors now: " +
+                    ", ".join(f"{r['sector']} ({r['ret_1m_pct']:+}%)" for r in rotation[:3]) + ". Tilt trims toward leaders.")
+    return {"horizon": horizon, "extra_capital": extra_capital, "total_value": round(total),
+            "overall_health": overall_health, "overall_verdict": overall_verdict, "portfolio_earnings_cagr": port_cagr,
+            "holdings": sorted(valid, key=lambda e: -e["health"]), "errors": [e["sym"] for e in evals if "error" in e],
+            "sectors": sectors, "concentration_pct": conc, "sector_rotation": rotation,
+            "to_trim": [e["sym"] for e in to_trim], "to_add": [e["sym"] for e in to_add],
+            "freed_capital": round(freed), "substitutes": subs, "plan": plan,
+            "note": "Per-stock health = 60% fundamentals + 40% technicals. SL = price−2×ATR(14), TP = price+3×ATR (≈1.5 reward:risk); "
+                    "expected move = daily σ × √(horizon trading days) = a 1-standard-deviation range. News/policy is qualitative — use it to "
+                    "widen/tighten these levels and to confirm a Reduce/Exit. Educational only."}
+
+
 # ---------------------------- routes ----------------------------
 @app.route("/")
 def index():
@@ -1467,6 +1616,19 @@ def optimize():
         return jresp(portfolio_analytics(holdings, float(d.get("extra_capital") or 0)))
     except Exception as e:
         return jresp({"error": f"Optimization failed: {e}"}, 500)
+
+
+@app.route("/portfolio_eval", methods=["POST"])
+def portfolio_eval_route():
+    d = request.get_json(force=True)
+    holdings = [{"sym": (h.get("sym") or "").strip().upper(), "qty": float(h.get("qty") or 0), "buy": float(h.get("buy") or 0)}
+                for h in d.get("holdings", []) if h.get("sym")]
+    if not holdings:
+        return jresp({"error": "Add at least one holding."}, 400)
+    try:
+        return jresp(portfolio_eval(holdings, d.get("horizon", "medium"), float(d.get("extra_capital") or 0)))
+    except Exception as e:
+        return jresp({"error": f"Evaluation failed: {e}"}, 500)
 
 
 @app.route("/portfolio_news")
@@ -1689,6 +1851,7 @@ details summary{cursor:pointer;color:var(--mut);font-size:13px}.disc{font-size:1
   .rec{font-size:14px}
 }
 @media(max-width:420px){.cards,.panel{grid-template-columns:1fr}}
+.creator{text-align:center;font-size:13px;letter-spacing:1px;opacity:.32;padding:6px 0 26px}
 #authbar{position:absolute;top:14px;right:16px;font-size:13px;display:flex;gap:8px;align-items:center}
 #authbar button{background:#0e1422;color:var(--acc);border:1px solid var(--line);padding:7px 12px;border-radius:10px;font-size:13px}
 @media(max-width:680px){#authbar{position:static;justify-content:center;margin-top:8px}}
@@ -1751,6 +1914,7 @@ details summary{cursor:pointer;color:var(--mut);font-size:13px}.disc{font-size:1
 <div id="out"></div>
 </div>
 <div class="disc">⚠️ Educational use only. Not investment advice. Data: Yahoo Finance + Google News. Verify before any decision.</div>
+<div class="creator">creator: mohith</div>
 <script>
 const $=h=>{const d=document.createElement('div');d.innerHTML=h;return d.firstElementChild};
 const el=id=>document.getElementById(id), out=el('out');
@@ -1759,6 +1923,7 @@ let charts=[],mode='search',UNI={},MOD={};
 function setMode(m){mode=m;document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x.dataset.tab===m));
   ['search','explore','models','track','markets','watch','me'].forEach(k=>el('m-'+k).style.display=k===m?(k==='search'||k==='explore'?'grid':'block'):'none');
   el('filters').style.display=(m==='search'||m==='explore')?'grid':'none';
+  el('out').style.display=(m==='search'||m==='explore')?'block':'none';  // keep single-stock analysis out of other tabs
   if(m==='models')renderModels();if(m==='track')renderTracker();if(m==='markets')renderMarkets();if(m==='watch')renderWatch();if(m==='me')renderMe();}
 document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>setMode(t.dataset.tab));
 
@@ -1777,28 +1942,44 @@ function paintAuth(){const bar=el('authbar');if(!bar)return;
     el('logout').onclick=()=>SB.auth.signOut();}
   else{bar.innerHTML=`<button id="login">🔐 Sign in with Google</button>`;
     el('login').onclick=()=>SB.auth.signInWithOAuth({provider:'google',options:{redirectTo:window.location.origin}});}}
-async function saveWatch(ticker,name){if(!SB){alert('Sign in (top-right) to save watchlists.');return;}if(!USER){alert('Please sign in with Google first.');return;}
-  const {error}=await SB.from('watchlist').upsert({user_id:USER.id,ticker,name},{onConflict:'user_id,ticker'});
-  alert(error?('Could not save: '+error.message):('Saved '+ticker+' to your watchlist.'));}
+function gotoTicker(t){el('ticker').value=t.replace('.NS','').replace('.BO','');el('market').value=t.endsWith('.BO')?'BSE':t.endsWith('.NS')?'NSE':'Global';setMode('search');el('go').click();}
+async function addWatch(ticker,name,fav,quiet){if(!SB){alert('Sign in (top-right) to save watchlists.');return false;}if(!USER){alert('Please sign in with Google first.');return false;}
+  const {error}=await SB.from('watchlist').upsert({user_id:USER.id,ticker,name:name||null},{onConflict:'user_id,ticker'});
+  if(error){alert('Could not save: '+error.message);return false;}
+  if(fav){await setFav(ticker,true,true);}
+  if(!quiet)alert((fav?'Added to favorites: ':'Saved to watchlist: ')+ticker);
+  return true;}
+async function setFav(ticker,on,quiet){if(!SB||!USER)return;
+  const {error}=await SB.from('watchlist').update({fav:on}).eq('user_id',USER.id).eq('ticker',ticker);
+  if(error&&!quiet)alert('To use favorites, run the one-line SQL in the README (add "fav" column). '+error.message);}
+function saveWatch(t,n){return addWatch(t,n,false);}      // back-compat
+function favWatch(t,n){return addWatch(t,n,true);}
+// reusable personal-watchlist block (search-to-add + saved list + favorites). pfx keeps ids unique per container.
+function renderMyWatch(box,pfx){
+  if(!SB){box.innerHTML='<section class="glass"><h2>⭐ My watchlist</h2><p class="muted">Sign in (top-right) to build a personal watchlist & favorites that sync across your devices.</p></section>';return;}
+  if(!USER){box.innerHTML='<section class="glass"><h2>⭐ My watchlist</h2><p class="muted">Sign in with Google (top-right) to add companies to your watchlist.</p></section>';return;}
+  box.innerHTML=`<section class="glass"><h2>⭐ My watchlist &amp; favorites</h2>
+    <div class="ac" style="max-width:460px"><label>Search a company to add</label>
+      <input id="${pfx}sym" placeholder="Type e.g. Reliance, HAL, Apple…" autocomplete="off"><div class="acbox" id="${pfx}box"></div></div>
+    <div id="${pfx}list" style="margin-top:12px"><div class="spin"></div></div></section>`;
+  acWire(pfx+'sym',pfx+'box',async sym=>{el(pfx+'sym').value='';const ok=await addWatch(sym,null,false,true);if(ok)loadMyWatch(pfx);});
+  loadMyWatch(pfx);}
+async function loadMyWatch(pfx){const box=el(pfx+'list');if(!box)return;
+  const wl=await SB.from('watchlist').select('*').order('added_at',{ascending:false});const rows=wl.data||[];
+  let h=rows.length?'<table><tr><th>Ticker</th><th>Name</th><th>Fav</th><th></th><th></th></tr>'+rows.map(r=>`<tr><td>${r.ticker.replace('.NS','').replace('.BO','')}</td><td>${r.name||''}</td><td><a href="#" class="favt" data-t="${r.ticker}" data-f="${r.fav?1:0}" style="text-decoration:none">${r.fav?'❤️':'🤍'}</a></td><td><a href="#" class="wlgo" data-t="${r.ticker}">Analyze</a></td><td><a href="#" class="wlrm" data-t="${r.ticker}">✕</a></td></tr>`).join('')+'</table><p class="muted">🤍 → ❤️ marks a favorite. Click Analyze to load it.</p>':'<p class="muted">Empty — search above, or hit ★/❤️ on a stock you analyze.</p>';
+  box.innerHTML=h;
+  box.querySelectorAll('.wlgo').forEach(a=>a.onclick=e=>{e.preventDefault();gotoTicker(a.dataset.t);});
+  box.querySelectorAll('.wlrm').forEach(a=>a.onclick=async e=>{e.preventDefault();await SB.from('watchlist').delete().eq('user_id',USER.id).eq('ticker',a.dataset.t);loadMyWatch(pfx);});
+  box.querySelectorAll('.favt').forEach(a=>a.onclick=async e=>{e.preventDefault();await setFav(a.dataset.t,a.dataset.f!=='1');loadMyWatch(pfx);});}
 async function logCall(d){if(!SB||!USER)return;try{await SB.from('search_history').insert(
   {user_id:USER.id,ticker:d.ticker,name:d.name,verdict:(d.research&&d.research.verdict)||null,score:d.overall,price:d.price});}catch(e){}}
 async function renderMe(){const box=el('m-me');
   if(!SB){box.innerHTML='<section class="glass"><h2>👤 My space</h2><p class="muted">Accounts aren\'t enabled on this deployment. Set SUPABASE_URL & SUPABASE_ANON_KEY (see README) to turn on Google sign-in, saved watchlists and your analysis journal.</p></section>';return;}
   if(!USER){box.innerHTML='<section class="glass"><h2>👤 My space</h2><p class="muted">Sign in with Google (top-right) to see your saved watchlist and analysis journal.</p></section>';return;}
-  box.innerHTML='<div class="spin"></div>';
-  const wl=await SB.from('watchlist').select('*').order('added_at',{ascending:false});
+  box.innerHTML='<div id="me-watch"></div><section class="glass"><h2>📓 Analysis journal &amp; calibration</h2><p class="muted">Your past calls scored against live price — this is how you see which signals actually work for you (no black-box prediction).</p><div id="caloutput"><div class="spin"></div></div></section>';
+  renderMyWatch(el('me-watch'),'mw_');
   const hist=await SB.from('search_history').select('*').order('at',{ascending:false}).limit(40);
-  let h=`<section class="glass"><h2>⭐ My watchlist</h2>`;
-  const rows=(wl.data||[]);
-  h+=rows.length?'<table><tr><th>Ticker</th><th>Name</th><th></th><th></th></tr>'+rows.map(r=>`<tr><td>${r.ticker.replace('.NS','')}</td><td>${r.name||''}</td><td><a href="#" class="wlgo" data-t="${r.ticker}">Analyze</a></td><td><a href="#" class="wlrm" data-t="${r.ticker}">✕</a></td></tr>`).join('')+'</table>':'<p class="muted">Empty. Analyze a stock and hit ★ Save.</p>';
-  h+='</section>';
-  // analysis journal + simple calibration (the honest "learning" loop)
-  const hr=(hist.data||[]);
-  h+='<section class="glass"><h2>📓 Analysis journal &amp; calibration</h2><p class="muted">Your past calls scored against live price — this is how you see which signals actually work for you (no black-box prediction).</p><div id="caloutput"><div class="spin"></div></div></section>';
-  box.innerHTML=h;
-  box.querySelectorAll('.wlgo').forEach(a=>a.onclick=e=>{e.preventDefault();el('ticker').value=a.dataset.t.replace('.NS','').replace('.BO','');el('market').value=a.dataset.t.endsWith('.BO')?'BSE':a.dataset.t.endsWith('.NS')?'NSE':'Global';setMode('search');el('go').click();});
-  box.querySelectorAll('.wlrm').forEach(a=>a.onclick=async e=>{e.preventDefault();await SB.from('watchlist').delete().eq('user_id',USER.id).eq('ticker',a.dataset.t);renderMe();});
-  calibrate(hr);}
+  calibrate(hist.data||[]);}
 async function calibrate(hr){const box=el('caloutput');if(!box)return;if(!hr.length){box.innerHTML='<p class="muted">No calls logged yet — analyze some stocks while signed in.</p>';return;}
   const syms=[...new Set(hr.map(r=>r.ticker))];const q=await(await fetch('/quote?tickers='+encodeURIComponent(syms.join(',')))).json();
   let wins=0,scored=0,t='<table><tr><th>Date</th><th>Ticker</th><th>Verdict</th><th>Score</th><th>Price then</th><th>Now</th><th>Return</th></tr>';
@@ -1910,8 +2091,9 @@ function dlTechnical(){const d=window.LAST,t=window.LASTTA;if(!t){alert('Open th
   r.push([],['Pattern','Bias','Confidence','Detail']);(t.patterns||[]).forEach(p=>r.push([p.name,p.bias,p.confidence,p.detail]));
   dl(d.ticker.replace('.','_')+'_technical_'+t.tf+'.csv',r);}
 function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LASTTA=null;logCall(d);
+  const _nm=(d.name||'').replace(/'/g,'');
   out.append($(`<section class="glass"><h2>${d.name} <span class="muted">${d.ticker}</span>
-      <button class="dl" style="float:right" onclick="saveWatch('${d.ticker}','${(d.name||'').replace(/'/g,'')}')">★ Save to watchlist</button></h2>
+      <span style="float:right"><button class="dl" onclick="favWatch('${d.ticker}','${_nm}')">❤️ Favorite</button><button class="dl" onclick="saveWatch('${d.ticker}','${_nm}')">★ Watchlist</button></span></h2>
     <div class="muted">${d.sector||''} · ${d.industry||''}</div><div style="margin:8px 0">${(d.tags||[]).map(t=>`<span class="tag">${t}</span>`).join('')}</div>
     <div class="grid cards" style="margin-top:6px">
       <div class="chip">Price<b>${money(cur,d.price,d.price_inr)}</b></div>
@@ -2142,10 +2324,12 @@ function renderTracker(){const p=loadPort();
     <div><label>Alert if ± %</label><input id="t-alert" type="number" value="10" min="0"></div><button id="t-add">Add holding</button></div>
     <div class="panel" style="margin-top:10px"><div><label>Total capital for rebalancing (₹, manual)</label><input id="t-cap" type="number" min="0" value="${localStorage.getItem(CKEY)||200000}"></div>
     <div><label>Extra cash to deploy (₹)</label><input id="t-extra" type="number" min="0" value="0"></div>
-    <div style="align-self:end"><button id="t-opt" class="full">🧮 Analyze &amp; optimize portfolio</button></div></div>
-    <div style="margin:10px 0"><button id="t-notif" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">🔔 Enable alerts</button> <button id="t-refresh" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">↻ Refresh now</button> <span class="muted">Auto-refreshes every 60s.</span></div>
+    <div><label>Investment horizon</label><select id="t-hz"><option value="short">Short (≤3y)</option><option value="medium" selected>Medium (3–7y)</option><option value="long">Long (7y+)</option></select></div></div>
+    <div style="margin:10px 0"><button id="t-eval" class="full" style="margin-bottom:8px">🎯 Evaluate &amp; smart-rebalance (per-stock + SL/TP + substitutes)</button>
+    <button id="t-opt" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">🧮 Quant analytics (MPT/VaR)</button>
+    <button id="t-notif" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">🔔 Enable alerts</button> <button id="t-refresh" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">↻ Refresh now</button> <span class="muted">Auto-refreshes every 60s.</span></div>
     <div id="t-table"><div class="muted">No holdings yet — add one above.</div></div></section>
-    <div id="t-opt-out"></div><div id="t-news"></div>`;
+    <div id="t-eval-out"></div><div id="t-opt-out"></div><div id="t-news"></div>`;
   el('m-track').innerHTML=h;
   acWire('t-sym','t-acbox',sym=>{el('t-sym').value=sym;});
   el('t-cap').onchange=()=>localStorage.setItem(CKEY,el('t-cap').value);
@@ -2154,7 +2338,39 @@ function renderTracker(){const p=loadPort();
   el('t-notif').onclick=()=>Notification.requestPermission();
   el('t-refresh').onclick=refreshPort;
   el('t-opt').onclick=optimizePort;
+  el('t-eval').onclick=evalPort;
   clearInterval(trackTimer);if(p.length){refreshPort();loadPortNews();trackTimer=setInterval(refreshPort,60000);}}
+
+async function evalPort(){const p=loadPort();if(p.length<1){el('t-eval-out').innerHTML='<section class="glass">Add holdings first.</section>';return;}
+  el('t-eval-out').innerHTML='<div class="spin"></div><p class="muted" style="text-align:center">Evaluating each holding (fundamentals + technicals) — this takes ~20–40s.</p>';
+  const d=await(await fetch('/portfolio_eval',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({holdings:p,horizon:el('t-hz').value,extra_capital:+el('t-extra').value||0})})).json();
+  if(d.error){el('t-eval-out').innerHTML=`<section class="glass">❌ ${d.error}</section>`;return;}
+  renderEval(d);}
+function vcl(v){return (v==='Accumulate')?'pos':(v==='Exit'||v==='Reduce')?'neg':'';}
+function renderEval(d){const o=el('t-eval-out');o.innerHTML='';
+  const oc=d.overall_health>=6.5?'v-under':d.overall_health>=5?'v-fair':'v-over';
+  o.append($(`<section class="glass"><h2>🎯 Portfolio evaluation &amp; smart rebalancing</h2>
+    <div class="grid cards"><div class="chip">Portfolio value<b>₹${fmt(d.total_value)}</b></div>
+    <div class="chip">Overall health<b>${d.overall_health}/10</b></div>
+    <div class="chip">Verdict<b><span class="verdict ${oc}">${d.overall_verdict}</span></b></div>
+    <div class="chip">Blended earnings CAGR<b>${d.portfolio_earnings_cagr==null?'—':d.portfolio_earnings_cagr+'%'}</b><span class="muted">vs NIFTY ~12%</span></div></div>
+    <h3>What to do now</h3>${d.plan.map(x=>`<div class="flag ${x.indexOf('⚠')>-1?'f-bad':'f-good'}">${x}</div>`).join('')}
+    <p class="muted">${d.note}</p></section>`));
+  // per-stock evaluation table
+  let t='<section class="glass"><h2>🔬 Every holding evaluated (like its own stock)</h2><table><tr><th>Stock</th><th>Wt</th><th>Health</th><th>Fund</th><th>Tech</th><th>Verdict</th><th>P&L</th><th>Trend</th><th>RSI</th><th>RS 6m</th><th>3y CAGR</th><th>SL</th><th>TP</th></tr>';
+  d.holdings.forEach(e=>{t+=`<tr><td>${e.sym.replace('.NS','').replace('.BO','')}</td><td>${e.weight_pct}%</td><td><b>${e.health}</b></td><td>${e.fund_score}</td><td>${e.tech_score}</td><td class="${vcl(e.verdict)}">${e.verdict}</td><td class="${e.pnl_pct>=0?'pos':'neg'}">${e.pnl_pct==null?'—':(e.pnl_pct>=0?'+':'')+e.pnl_pct+'%'}</td><td>${e.above_200dma?'▲ above 200DMA':'▼ below 200DMA'}</td><td>${e.rsi}</td><td class="${(e.rel_strength_6m||0)>=0?'pos':'neg'}">${e.rel_strength_6m==null?'—':(e.rel_strength_6m>=0?'+':'')+e.rel_strength_6m+'%'}</td><td>${e.earnings_cagr_3y==null?'—':e.earnings_cagr_3y+'%'}</td><td class="neg">${fmt(e.sl)} <span class="muted">(${e.sl_pct}%)</span></td><td class="pos">${fmt(e.tp)} <span class="muted">(+${e.tp_pct}%)</span></td></tr>`;});
+  o.append($(t+'</table><p class="muted">SL/TP from ATR(14); expected 1σ move over your horizon shown via volatility. RS 6m = return vs index. ❤️ Accumulate · Hold · Reduce · Exit.</p></section>'));
+  // substitutes
+  if(d.substitutes&&Object.keys(d.substitutes).length){let s='<section class="glass"><h2>🔁 Better substitutes for weak holdings</h2>';
+    for(const[sym,o2]of Object.entries(d.substitutes)){s+=`<h3>${sym.replace('.NS','')} → stronger ${o2.sector} names</h3><table><tr><th>Candidate</th><th>Quality</th><th>P/E</th><th>ROE%</th><th>6m%</th></tr>`;
+      o2.picks.forEach(p=>s+=`<tr><td>${p.name||p.ticker} <span class="muted">${p.ticker.replace('.NS','')}</span></td><td>${p.quality??'—'}</td><td>${fmt(p.pe)}</td><td>${fmt(p.roe)}</td><td>${fmt(p.momentum_6m)}</td></tr>`);s+='</table>';}
+    o.append($(s+'<p class="muted">Same-sector names scoring higher on quality than the holding they\'d replace. Confirm before switching.</p></section>'));}
+  // sector mix + rotation
+  let sc='<section class="glass"><h2>🧭 Sector mix, rotation &amp; diversification</h2><div class="grid two"><div><h3>Your sector weights</h3>';
+  sc+=d.sectors.map(s=>`<div class="kv">${s.sector}: <b>${s.pct}%</b>${s.pct>30?' <span class="neg">(concentrated)</span>':''}</div>`).join('');
+  sc+='</div><div><h3>Sector rotation (1-month leaders)</h3>'+d.sector_rotation.slice(0,6).map(r=>`<div class="kv">${r.sector}: ${r.ret_1m_pct>=0?'<span class="pos">+'+r.ret_1m_pct+'%</span>':'<span class="neg">'+r.ret_1m_pct+'%</span>'}</div>`).join('')+'</div></div>';
+  o.append($(sc+`<p class="muted">Largest sector ${d.concentration_pct}% of the book. Rotate trims toward the leading sectors above; keep any single sector under ~30% to stay diversified.</p></section>`));}
 
 async function optimizePort(){const p=loadPort();if(p.length<1){el('t-opt-out').innerHTML='<section class="glass">Add holdings first.</section>';return;}
   el('t-opt-out').innerHTML='<div class="spin"></div>';
@@ -2280,8 +2496,9 @@ async function renderMarkets(){el('m-markets').innerHTML='<div class="spin"></di
 
 // ---- watchlists ----
 async function renderWatch(){const lists=['Buffett (quality)','High ROE (ROCE proxy)','Deep Value','Small-cap compounders'];
-  el('m-watch').innerHTML=`<section class="glass"><h2>⭐ Watchlists</h2><p class="muted">Curated pools screened live and ranked. Click one to load (takes a few seconds — it fetches fundamentals).</p>
+  el('m-watch').innerHTML=`<div id="ww-watch"></div><section class="glass"><h2>📚 Curated screens</h2><p class="muted">Pre-built pools screened live and ranked. Click one to load (takes a few seconds — it fetches fundamentals).</p>
     <div>${lists.map(n=>`<button class="wlbtn" data-n="${n}" style="margin:4px;background:#0e1422;color:var(--acc);border:1px solid var(--line)">${n}</button>`).join('')}</div><div id="wl-out"></div></section>`;
+  renderMyWatch(el('ww-watch'),'ww_');
   el('m-watch').querySelectorAll('.wlbtn').forEach(b=>b.onclick=async()=>{el('wl-out').innerHTML='<div class="spin"></div>';
     const d=await(await fetch('/screen?type='+encodeURIComponent(b.dataset.n))).json();
     if(d.error){el('wl-out').innerHTML=`<p class="muted">${d.error}</p>`;return;}
