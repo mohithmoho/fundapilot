@@ -970,6 +970,30 @@ def ai_available():
     return bool(os.environ.get("ANTHROPIC_API_KEY") or (os.environ.get("AI_API_KEY") and os.environ.get("AI_BASE_URL")))
 
 
+# Protect a PERSONAL API key on a public URL: tight per-IP + global daily caps so nobody can
+# burn your credits. Override with env AI_PER_MIN / AI_DAILY_CAP.
+_AI_RL, _AI_DAY = {}, {"date": "", "count": 0}
+
+
+def ai_rate_ok(ip):
+    per_min = int(os.environ.get("AI_PER_MIN", "6"))
+    daily = int(os.environ.get("AI_DAILY_CAP", "150"))
+    today = time.strftime("%Y-%m-%d")
+    if _AI_DAY["date"] != today:
+        _AI_DAY.update(date=today, count=0)
+    if _AI_DAY["count"] >= daily:
+        return False, "Daily AI limit reached for this app — try again tomorrow."
+    now = time.time()
+    dq = _AI_RL.setdefault(ip, deque())
+    while dq and dq[0] < now - 60:
+        dq.popleft()
+    if len(dq) >= per_min:
+        return False, "Too many AI requests — wait a minute."
+    dq.append(now)
+    _AI_DAY["count"] += 1
+    return True, None
+
+
 def ai_chat(system, user, max_tokens=900):
     """Provider-flexible LLM call. Prefers Anthropic if its key is set; otherwise any OpenAI-compatible
     endpoint (Groq/OpenRouter/OpenAI/Together) via AI_BASE_URL + AI_API_KEY (+ AI_MODEL)."""
@@ -1763,33 +1787,48 @@ def index():
 def ai_analyst():
     if not ai_available():
         return jresp({"enabled": False, "note": "AI is off on this deployment. Set ANTHROPIC_API_KEY, or a free OpenAI-compatible key (AI_BASE_URL + AI_API_KEY, e.g. Groq) — see README."})
-    ctx = json.dumps((request.get_json(force=True) or {}).get("context") or {})[:6500]
-    user = ("Act as my PM and make a call on this stock from the analysis below.\n\nANALYSIS DATA:\n" + ctx +
-            "\n\nRespond in this structure (plain text, concise):\n"
-            "DECISION: one of Buy / Accumulate / Hold / Reduce / Avoid\n"
-            "THESIS: 2–3 sentences on why\n"
-            "KEY RISKS: 3 bullets\n"
-            "WHAT WOULD CHANGE MY MIND: 1–2 bullets\n"
-            "CONFIDENCE: low / medium / high (+ one line why)\n"
-            "Base everything only on the data above + general knowledge; don't invent numbers.")
+    ip = (request.headers.get("X-Forwarded-For", request.remote_addr or "?")).split(",")[0].strip()
+    ok, why = ai_rate_ok(ip)
+    if not ok:
+        return jresp({"enabled": True, "note": why}, 429)
+    d = request.get_json(force=True) or {}
+    mode = d.get("mode", "stock")
+    ctx = json.dumps(d.get("context") or {})[:6500]
+    if mode == "portfolio":
+        user = ("Act as my PM and review this WHOLE PORTFOLIO from the evaluation below.\n\nDATA:\n" + ctx +
+                "\n\nRespond (plain text, concise):\nOVERALL STANCE: 1–2 sentences\nTOP 3 ACTIONS: prioritized bullets (sell/trim/add/average/diversify) with why\n"
+                "BIGGEST RISK: 1 line\nVERDICT: one decisive line. Base only on the data + general knowledge; don't invent numbers.")
+    elif mode == "scan":
+        user = ("These are WATCHLIST candidates with their evaluation. Act as my PM.\n\nDATA:\n" + ctx +
+                "\n\nRespond (plain text):\nTOP PICKS TO RESEARCH NOW: rank up to 3 with a one-line reason each\nAVOID/WAIT: any clear passes and why\n"
+                "ONE-LINE TAKEAWAY. Base only on the data given; don't invent numbers.")
+    else:
+        user = ("Act as my PM and make a call on this stock from the analysis below.\n\nANALYSIS DATA:\n" + ctx +
+                "\n\nRespond (plain text, concise):\nDECISION: Buy / Accumulate / Hold / Reduce / Avoid\nTHESIS: 2–3 sentences\n"
+                "KEY RISKS: 3 bullets\nWHAT WOULD CHANGE MY MIND: 1–2 bullets\nCONFIDENCE: low/medium/high + one line. "
+                "Base only on the data above + general knowledge; don't invent numbers.")
     try:
         return jresp({"enabled": True, "text": ai_chat(AI_SYSTEM, user)})
-    except Exception as e:
-        return jresp({"enabled": False, "note": f"AI call failed: {e}"}, 500)
+    except Exception:
+        return jresp({"enabled": False, "note": "AI request failed — check the API key / provider settings (owner: see Render logs)."}, 502)
 
 
 @app.route("/ai_chat", methods=["POST"])
 def ai_chat_route():
     if not ai_available():
         return jresp({"error": "AI not configured."}, 400)
+    ip = (request.headers.get("X-Forwarded-For", request.remote_addr or "?")).split(",")[0].strip()
+    ok, why = ai_rate_ok(ip)
+    if not ok:
+        return jresp({"error": why}, 429)
     d = request.get_json(force=True) or {}
     q = (d.get("q") or "")[:1000]
     ctx = json.dumps(d.get("context") or {})[:6000]
     user = f"Here is the analysis context:\n{ctx}\n\nUser question: {q}\n\nAnswer as the analyst, grounded in this context; if it's outside the data, say what you'd need."
     try:
         return jresp({"text": ai_chat(AI_SYSTEM, user, 700)})
-    except Exception as e:
-        return jresp({"error": str(e)}, 500)
+    except Exception:
+        return jresp({"error": "AI request failed — check provider settings."}, 502)
 
 
 @app.route("/universe")
@@ -2277,10 +2316,25 @@ async function logCall(d){if(!SB||!USER)return;try{await SB.from('search_history
 async function renderMe(){const box=el('m-me');
   if(!SB){box.innerHTML='<section class="glass"><h2>👤 My space</h2><p class="muted">Accounts aren\'t enabled on this deployment. Set SUPABASE_URL & SUPABASE_ANON_KEY (see README) to turn on Google sign-in, saved watchlists and your analysis journal.</p></section>';return;}
   if(!USER){box.innerHTML='<section class="glass"><h2>👤 My space</h2><p class="muted">Sign in with Google (top-right) to see your saved watchlist and analysis journal.</p></section>';return;}
-  box.innerHTML='<div id="me-watch"></div><section class="glass"><h2>📓 Analysis journal &amp; calibration</h2><p class="muted">Your past calls scored against live price — this is how you see which signals actually work for you (no black-box prediction).</p><div id="caloutput"><div class="spin"></div></div></section>';
+  box.innerHTML='<div id="me-watch"></div>'+
+    (window.AI_ON?'<section class="glass"><h2>🧠 AI scan my watchlist</h2><button class="dl" id="ai-scan">🧠 Scan my current list for what to research now</button><div id="ai-scan-out" style="margin-top:10px"></div><p class="muted">Evaluates each name in the selected list (fundamentals + technicals), then the AI ranks what looks most actionable. Educational only.</p></section>':'')+
+    '<section class="glass"><h2>📓 Analysis journal &amp; calibration</h2><p class="muted">Your past calls scored against live price — this is how you see which signals actually work for you (no black-box prediction).</p><div id="caloutput"><div class="spin"></div></div></section>';
   renderMyWatch(el('me-watch'),'mw_');
+  if(window.AI_ON&&el('ai-scan'))el('ai-scan').onclick=aiScanWatchlist;
   const hist=await SB.from('search_history').select('*').order('at',{ascending:false}).limit(40);
   calibrate(hist.data||[]);}
+async function aiScanWatchlist(){const out=el('ai-scan-out');
+  const wl=await SB.from('watchlist').select('*');const rows=(wl.data||[]).filter(r=>(r.list_name||'My Watchlist')===activeList);
+  if(!rows.length){out.innerHTML='<p class="muted">“'+esc(activeList)+'” is empty — add some names first.</p>';return;}
+  out.innerHTML='<div class="spin"></div><p class="muted" style="text-align:center">Evaluating '+rows.length+' names then asking the AI… (~20–40s)</p>';
+  try{
+    const ev=await(await fetch('/portfolio_eval',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({holdings:rows.map(r=>({sym:r.ticker,qty:1,buy:0})),horizon:'medium',extra_capital:0})})).json();
+    if(ev.error){out.innerHTML=`<p class="muted">${esc(ev.error)}</p>`;return;}
+    const ctx={list:activeList,candidates:(ev.holdings||[]).map(e=>({sym:e.sym,health:e.health,verdict:e.verdict,fund:e.fund_score,tech:e.tech_score,pe:e.pe,roe:e.roe_pct,roce:e.roce_pct,cagr:e.earnings_cagr_3y,rsi:e.rsi,above_200dma:e.above_200dma,rel_strength_6m:e.rel_strength_6m}))};
+    const r=await(await fetch('/ai_analyst',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode:'scan',context:ctx})})).json();
+    out.innerHTML=r.text?`<div class="rec" style="white-space:pre-wrap;line-height:1.55">${esc(r.text)}</div>`:`<p class="muted">${esc(r.note||'No response.')}</p>`;
+  }catch(e){out.innerHTML='<p class="muted">Scan failed.</p>';}}
 async function calibrate(hr){const box=el('caloutput');if(!box)return;if(!hr.length){box.innerHTML='<p class="muted">No calls logged yet — analyze some stocks while signed in.</p>';return;}
   const syms=[...new Set(hr.map(r=>r.ticker))];const q=await(await fetch('/quote?tickers='+encodeURIComponent(syms.join(',')))).json();
   let wins=0,scored=0,t='<table><tr><th>Date</th><th>Ticker</th><th>Verdict</th><th>Score</th><th>Price then</th><th>Now</th><th>Return</th></tr>';
@@ -2744,6 +2798,20 @@ function renderEval(d){const o=el('t-eval-out');o.innerHTML='';
       <div>${d.final_verdict.actions.map((a,i)=>`<div class="flag ${/sell|trim|diversify|cut|research/i.test(a.do)?'f-bad':'f-good'}" style="margin:8px 0">
         <div><b>${i+1}. ${esc(a.do)}</b></div><div style="font-size:13px;margin-top:3px" class="muted">${esc(a.why)}</div></div>`).join('')}</div>
       <p class="muted">Each call blends fundamentals (60%) and technicals (40%). A loss-making company can't score "strong" no matter how the chart looks; if a metric is missing the stock is left <b>Not rated</b> rather than guessed.</p></section>`));}
+  // 🧠 AI take on the whole portfolio (on demand)
+  if(window.AI_ON){
+    o.append($(`<section class="glass"><h2>🧠 AI take on my portfolio</h2>
+      <button class="dl" id="ai-pf">🧠 Ask the AI to review my portfolio</button>
+      <div id="ai-pf-out" style="margin-top:10px"></div></section>`));
+    const pctx={overall_health:d.overall_health,overall_verdict:d.overall_verdict,total_value:d.total_value,
+      concentration_pct:d.concentration_pct,sectors:d.sectors,sector_rotation:(d.sector_rotation||[]).slice(0,4),
+      holdings:(d.holdings||[]).map(e=>({sym:e.sym,health:e.health,verdict:e.verdict,fund:e.fund_score,tech:e.tech_score,pnl_pct:e.pnl_pct,weight_pct:e.weight_pct})),
+      blended_cagr:d.portfolio_earnings_cagr};
+    el('ai-pf').onclick=async()=>{const b=el('ai-pf-out');b.innerHTML='<div class="spin"></div><p class="muted" style="text-align:center">Thinking…</p>';
+      try{const r=await(await fetch('/ai_analyst',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode:'portfolio',context:pctx})})).json();
+        b.innerHTML=r.text?`<div class="rec" style="white-space:pre-wrap;line-height:1.55">${esc(r.text)}</div><p class="muted">AI reasoning over your evaluated portfolio — verify before acting.</p>`:`<p class="muted">${esc(r.note||'No response.')}</p>`;
+      }catch(e){b.innerHTML='<p class="muted">AI call failed.</p>';}};
+  }
   // how to rebalance — explicit steps + the situational plan
   o.append($(`<section class="glass"><h2>🔁 How to rebalance</h2>
     <ol style="line-height:1.7;padding-left:20px">${(d.steps||[]).map(s=>`<li>${s}</li>`).join('')}</ol>
