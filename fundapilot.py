@@ -974,8 +974,12 @@ AI_SYSTEM = (
 AI_DISCLAIMER = "⚠️ AI can make mistakes and may misread the data. Educational use only — not investment advice. Verify independently."
 
 
+def _env(name, default=""):
+    return (os.environ.get(name, default) or "").strip()  # strip copy-paste whitespace/newlines
+
+
 def ai_available():
-    return bool(os.environ.get("ANTHROPIC_API_KEY") or (os.environ.get("AI_API_KEY") and os.environ.get("AI_BASE_URL")))
+    return bool(_env("ANTHROPIC_API_KEY") or (_env("AI_API_KEY") and _env("AI_BASE_URL")))
 
 
 # Protect a PERSONAL API key on a public URL: tight per-IP + global daily caps so nobody can
@@ -1005,9 +1009,9 @@ def ai_rate_ok(ip):
 def ai_chat(system, user, max_tokens=900):
     """Provider-flexible LLM call. Prefers Anthropic if its key is set; otherwise any OpenAI-compatible
     endpoint (Groq/OpenRouter/OpenAI/Together) via AI_BASE_URL + AI_API_KEY (+ AI_MODEL)."""
-    ak = os.environ.get("ANTHROPIC_API_KEY")
+    ak = _env("ANTHROPIC_API_KEY")
     if ak:
-        model = os.environ.get("AI_MODEL", "claude-3-5-haiku-latest")
+        model = _env("AI_MODEL") or "claude-3-5-haiku-latest"
         r = requests.post("https://api.anthropic.com/v1/messages",
                           headers={"x-api-key": ak, "anthropic-version": "2023-06-01", "content-type": "application/json"},
                           json={"model": model, "max_tokens": max_tokens,
@@ -1015,9 +1019,9 @@ def ai_chat(system, user, max_tokens=900):
         if r.status_code >= 400:  # provider error text never contains the key (key is a header)
             raise RuntimeError(f"Anthropic {r.status_code} (model={model}): {r.text[:280]}")
         return r.json()["content"][0]["text"]
-    base, key = os.environ.get("AI_BASE_URL"), os.environ.get("AI_API_KEY")
+    base, key = _env("AI_BASE_URL"), _env("AI_API_KEY")
     if base and key:
-        model = os.environ.get("AI_MODEL", "llama-3.3-70b-versatile")
+        model = _env("AI_MODEL") or "llama-3.3-70b-versatile"
         r = requests.post(base.rstrip("/") + "/chat/completions",
                           headers={"Authorization": "Bearer " + key, "content-type": "application/json"},
                           json={"model": model, "max_tokens": max_tokens,
@@ -2812,30 +2816,38 @@ const CKEY='stocklens_capital';
 function renderTracker(){const p=loadPort();
   let h=`<section class="glass"><h2>📈 My portfolio — live</h2>
     <div class="panel"><div class="ac"><label>Ticker</label><input id="t-sym" placeholder="Type e.g. HAL, Apple…" autocomplete="off"><div class="acbox" id="t-acbox"></div></div>
-    <div><label>Qty</label><input id="t-qty" type="number" min="0"></div><div><label>Buy price</label><input id="t-buy" type="number" min="0"></div>
-    <div><label>Alert if ± %</label><input id="t-alert" type="number" value="10" min="0"></div><button id="t-add">Add holding</button></div>
+    <div><label>Qty</label><input id="t-qty" type="number" min="0"></div><div><label>Buy price (avg)</label><input id="t-buy" type="number" min="0"></div>
+    <button id="t-add">Add holding</button></div>
     <div class="panel" style="margin-top:10px"><div><label>Total capital (₹) <span class="tip" data-tip="Your overall investable corpus. Used as the base for position-sizing suggestions.">ⓘ</span></label><input id="t-cap" type="number" min="0" value="${localStorage.getItem(CKEY)||200000}"></div>
     <div><label>Extra cash to deploy (₹) <span class="tip" data-tip="New money you want to add right now. The rebalancer routes it to the strongest / below-buy names.">ⓘ</span></label><input id="t-extra" type="number" min="0" value="0"></div>
     <div><label>Investment horizon <span class="tip" data-tip="How long you plan to hold. Sets the SL/TP window and how patiently weak names are treated.">ⓘ</span></label><select id="t-hz"><option value="short">Short (≤3y)</option><option value="medium" selected>Medium (3–7y)</option><option value="long">Long (7y+)</option></select></div></div>
     <div style="margin:10px 0"><button id="t-eval" class="full" style="margin-bottom:8px">🎯 Evaluate &amp; rebalance my portfolio</button>
     <button id="t-opt" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">🧮 Quant analytics</button>
-    <button id="t-notif" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">🔔 Enable alerts</button> <button id="t-refresh" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">↻ Refresh now</button></div>
+    <button id="t-csv" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">⬇️ Export CSV</button>
+    <button id="t-refresh" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">↻ Refresh now</button></div>
     <div class="muted" style="font-size:12px;margin-bottom:8px">
-      <b>🎯 Evaluate &amp; rebalance</b>: rates every holding (fundamentals + technicals), gives a final verdict, SL/TP and what to buy/sell/switch. ·
-      <b>🧮 Quant analytics</b>: portfolio-level maths — Sharpe, VaR, Monte-Carlo, efficient frontier, correlation. ·
-      <b>🔔 Alerts</b>: browser pop-ups when a holding moves past your ±% threshold. ·
+      <b>🎯 Evaluate &amp; rebalance</b>: rates every holding (fundamentals + technicals), final verdict, SL/TP, what to buy/sell/switch. ·
+      <b>🧮 Quant analytics</b>: Sharpe, VaR, Monte-Carlo, efficient frontier, correlation. ·
+      <b>⬇️ Export CSV</b>: download your holdings + P&L. ·
       <b>↻ Refresh</b>: re-pull live prices (auto every 60s).</div>
-    <div id="t-table"><div class="muted">No holdings yet — add one above.</div></div></section>
+    <div id="t-summary"></div>
+    <div id="t-table"><div class="muted">No holdings yet — add one above.</div></div>
+    <div class="grid two" style="margin-top:8px"><div><canvas id="t-alloc" height="150"></canvas><div class="muted" style="text-align:center">Allocation by value</div></div><div id="t-movers"></div></div></section>
     <div id="t-eval-out"></div><div id="t-opt-out"></div><div id="t-news"></div>`;
   el('m-track').innerHTML=h;
   acWire('t-sym','t-acbox',sym=>{el('t-sym').value=sym;});
   el('t-cap').onchange=()=>localStorage.setItem(CKEY,el('t-cap').value);
   el('t-add').onclick=()=>{const s=el('t-sym').value.trim().toUpperCase();if(!s)return;
-    p.push({sym:s,qty:+el('t-qty').value||0,buy:+el('t-buy').value||0,alert:+el('t-alert').value||0,alerted:false});savePort(p);renderTracker();};
-  el('t-notif').onclick=()=>Notification.requestPermission();
+    p.push({sym:s,qty:+el('t-qty').value||0,buy:+el('t-buy').value||0});savePort(p);renderTracker();};
   el('t-refresh').onclick=refreshPort;
   el('t-opt').onclick=optimizePort;
   el('t-eval').onclick=evalPort;
+  el('t-csv').onclick=()=>{const p2=loadPort();if(!p2.length){alert('No holdings.');return;}
+    const Q=window.LASTQ||{};const rows=[['FundaPilot — portfolio'],[],['Ticker','Qty','Avg buy','Now','Day%','P&L','Since buy%']];
+    p2.forEach(hh=>{const x=Q[hh.sym];const now=x?x.price:'';const day=(x&&x.prev)?((x.price-x.prev)/x.prev*100).toFixed(2):'';
+      const pl=x?Math.round((x.price-hh.buy)*hh.qty):'';const since=(x&&hh.buy)?((x.price/hh.buy-1)*100).toFixed(1):'';
+      rows.push([hh.sym,hh.qty,hh.buy,now,day,pl,since]);});
+    dl('my_portfolio.csv',rows);};
   clearInterval(trackTimer);if(p.length){refreshPort();loadPortNews();trackTimer=setInterval(refreshPort,60000);}}
 
 async function evalPort(){const p=loadPort();if(p.length<1){el('t-eval-out').innerHTML='<section class="glass">Add holdings first.</section>';return;}
@@ -3015,22 +3027,39 @@ function drawEF(id,ef){const pts=ef.scatter.map(p=>({x:p.vol,y:p.ret}));
     {label:'Max Sharpe',data:[{x:ef.max_sharpe.vol,y:ef.max_sharpe.ret}],backgroundColor:'#39d98a',pointRadius:6},
     {label:'Min volatility',data:[{x:ef.min_vol.vol,y:ef.min_vol.ret}],backgroundColor:'#ffd166',pointRadius:6}]},
   options:{plugins:{legend:{labels:{color:'#8b97ad'}}},scales:{x:{title:{display:true,text:'Volatility %',color:'#8b97ad'},ticks:{color:'#8b97ad'}},y:{title:{display:true,text:'Return %',color:'#8b97ad'},ticks:{color:'#8b97ad'}}}}}));}
-async function refreshPort(){const p=loadPort();if(!p.length){el('t-table').innerHTML='<div class="muted">No holdings yet.</div>';return;}
+async function refreshPort(){const p=loadPort();if(!p.length){el('t-table').innerHTML='<div class="muted">No holdings yet.</div>';if(el('t-summary'))el('t-summary').innerHTML='';return;}
   const q=await(await fetch('/quote?tickers='+encodeURIComponent(p.map(h=>h.sym).join(',')))).json();
-  let inv=0,curv=0,t='<table><tr><th>Holding</th><th>Qty</th><th>Buy</th><th>Now</th><th>Day%</th><th>P&L</th><th>Since buy%</th><th></th></tr>';
-  p.forEach((h,i)=>{const Q=q[h.sym];const price=Q?Q.price:null,day=Q?((Q.price-Q.prev)/Q.prev*100):null;
+  window.LASTQ=q;
+  let inv=0,curv=0,dayPL=0,prevVal=0;const rowsData=[];
+  p.forEach((h,i)=>{const Q=q[h.sym];const price=Q?Q.price:null,prev=Q?Q.prev:null;
+    const day=(price!=null&&prev)?((price-prev)/prev*100):null;
     const pl=price!=null?(price-h.buy)*h.qty:null,since=price!=null&&h.buy?((price-h.buy)/h.buy*100):null;
-    if(price!=null){inv+=h.buy*h.qty;curv+=price*h.qty;}
-    if(since!=null&&h.alert&&Math.abs(since)>=h.alert&&!h.alerted){h.alerted=true;
-      if(Notification.permission==='granted')new Notification('FundaPilot alert',{body:`${h.sym} moved ${since.toFixed(1)}% from your buy price.`});}
-    if(since!=null&&Math.abs(since)<h.alert)h.alerted=false;
-    const c=v=>v==null?'—':(v>=0?'<span class="pos">+'+v.toFixed(2)+'</span>':'<span class="neg">'+v.toFixed(2)+'</span>');
-    t+=`<tr><td>${h.sym}</td><td>${h.qty}</td><td>${fmt(h.buy)}</td><td>${price==null?'—':fmt(price)}</td><td>${c(day)}</td><td>${c(pl)}</td><td>${c(since)}</td><td><a href="#" data-i="${i}" class="rm">✕</a></td></tr>`;});
+    const val=price!=null?price*h.qty:0;
+    if(price!=null){inv+=h.buy*h.qty;curv+=val;if(prev){dayPL+=(price-prev)*h.qty;prevVal+=prev*h.qty;}}
+    rowsData.push({h,i,price,day,pl,since,val});});
   savePort(p);
-  const tot=curv-inv,totp=inv?tot/inv*100:0;
-  t+=`</table><div class="grid cards" style="margin-top:10px"><div class="chip">Invested<b>₹${fmt(inv)}</b></div><div class="chip">Current<b>₹${fmt(curv)}</b></div><div class="chip">Total P&L<b>${tot>=0?'<span class="pos">+':'<span class="neg">'}${fmt(tot)} (${totp.toFixed(1)}%)</span></b></div></div>`;
-  el('t-table').innerHTML=t;
-  el('t-table').querySelectorAll('.rm').forEach(a=>a.onclick=e=>{e.preventDefault();const pp=loadPort();pp.splice(+a.dataset.i,1);savePort(pp);renderTracker();});}
+  const tot=curv-inv,totp=inv?tot/inv*100:0,dayp=prevVal?dayPL/prevVal*100:0;
+  const c=v=>v==null?'—':(v>=0?'<span class="pos">+'+v.toFixed(2)+'</span>':'<span class="neg">'+v.toFixed(2)+'</span>');
+  let t='<table><tr><th>Holding</th><th>Qty</th><th>Avg buy</th><th>Now</th><th>Day%</th><th>Wt%</th><th>P&L</th><th>Since buy%</th><th></th></tr>';
+  rowsData.forEach(r=>{const wt=curv?(r.val/curv*100):0;
+    t+=`<tr><td>${r.h.sym.replace('.NS','').replace('.BO','')}</td><td>${r.h.qty}</td><td>${fmt(r.h.buy)}</td><td>${r.price==null?'—':fmt(r.price)}</td><td>${c(r.day)}</td><td>${r.price==null?'—':wt.toFixed(1)+'%'}</td><td>${c(r.pl)}</td><td>${c(r.since)}</td><td><a href="#" data-i="${r.i}" class="rm">✕</a></td></tr>`;});
+  el('t-table').innerHTML=t+'</table>';
+  el('t-summary').innerHTML=`<div class="grid cards"><div class="chip">Invested<b>₹${fmt(inv)}</b></div><div class="chip">Current<b>₹${fmt(curv)}</b></div>
+    <div class="chip">Today's P&L<b>${dayPL>=0?'<span class="pos">+':'<span class="neg">'}₹${fmt(Math.abs(dayPL))} (${dayp>=0?'+':''}${dayp.toFixed(2)}%)</span></b></div>
+    <div class="chip">Total P&L<b>${tot>=0?'<span class="pos">+':'<span class="neg">'}₹${fmt(Math.abs(tot))} (${totp>=0?'+':''}${totp.toFixed(1)}%)</span></b></div></div>`;
+  el('t-table').querySelectorAll('.rm').forEach(a=>a.onclick=e=>{e.preventDefault();const pp=loadPort();pp.splice(+a.dataset.i,1);savePort(pp);renderTracker();});
+  // best/worst movers today
+  const moved=rowsData.filter(r=>r.day!=null).sort((a,b)=>b.day-a.day);
+  if(moved.length&&el('t-movers')){const top=moved[0],bot=moved[moved.length-1];
+    el('t-movers').innerHTML=`<h3 style="margin-top:0">Today's movers</h3>
+      <div class="flag f-good">▲ Best: <b>${top.h.sym.replace('.NS','')}</b> ${c(top.day)}%</div>
+      <div class="flag f-bad">▼ Worst: <b>${bot.h.sym.replace('.NS','')}</b> ${c(bot.day)}%</div>
+      <div class="muted">Since-buy leader: ${[...rowsData].filter(r=>r.since!=null).sort((a,b)=>b.since-a.since).map(r=>r.h.sym.replace('.NS','')+' '+(r.since>=0?'+':'')+r.since.toFixed(0)+'%').slice(0,1)[0]||'—'}</div>`;}
+  // allocation doughnut by current value
+  if(el('t-alloc')){const lbls=rowsData.filter(r=>r.val>0).map(r=>r.h.sym.replace('.NS','').replace('.BO',''));
+    const vals=rowsData.filter(r=>r.val>0).map(r=>Math.round(r.val));
+    if(window._allocChart)window._allocChart.destroy();
+    if(vals.length)window._allocChart=new Chart(el('t-alloc'),{type:'doughnut',data:{labels:lbls,datasets:[{data:vals,backgroundColor:['#6ea8fe','#39d98a','#ffd166','#b39bff','#ff6b6b','#5ad1c8','#f08fc0','#9ec5ff','#c8a9ff','#ffb86b']}]},options:{plugins:{legend:{position:'right',labels:{color:'#8b97ad',boxWidth:10,font:{size:11}}}}}});}}
 
 // ---- markets dashboard ----
 async function renderMarkets(){el('m-markets').innerHTML='<div class="spin"></div>';
