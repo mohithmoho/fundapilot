@@ -553,6 +553,30 @@ def institutional_metrics(fin, bs, cf, mktcap, ebitda, fcf):
     return m
 
 
+def enriched_info(sym):
+    """info dict with missing ratio fields filled from REAL statements (so screens/peers/industry-PE
+    aren't blank when Yahoo's `info` feed is blocked on cloud IPs). Only fetches statements when
+    `info` is actually incomplete, so it stays fast when the info feed works."""
+    info = dict(get_info(sym))
+    if all(_g(info, k) is not None for k in ("trailingPE", "returnOnEquity", "marketCap", "priceToBook")):
+        return info  # info feed worked (e.g. residential IP) — no need for statements
+    t = yf.Ticker(sym)
+    fast = _fast(t)
+    fin = bs = None
+    try: fin = t.financials
+    except Exception: pass
+    try: bs = t.balance_sheet
+    except Exception: pass
+    price = _g(info, "currentPrice", "regularMarketPrice", "previousClose") or fast.get("last_price")
+    if price is None:
+        try: price = float(t.history(period="5d")["Close"].dropna().iloc[-1])
+        except Exception: pass
+    for k, v in _compute_fundamentals(fin, bs, None, fast, price, None).items():
+        if _g(info, k) is None and v is not None:
+            info[k] = v
+    return info
+
+
 def fetch(ticker, years):
     t = yf.Ticker(ticker)
     notes = []
@@ -922,7 +946,7 @@ def screen_pool(syms, tilt="fundamental"):
         pass
     rows = []
     for s in syms:
-        i = get_info(s)
+        i = enriched_info(s)
         pe, pb = _g(i, "trailingPE"), _g(i, "priceToBook")
         roe, de = _pct(_g(i, "returnOnEquity")), _g(i, "debtToEquity")
         dv, beta = _pct(div_yield_dec(i)), _g(i, "beta")
@@ -1523,7 +1547,7 @@ def industry_pe(ticker, sector):
     def median_pe(syms):
         pes = []
         for s in syms[:6]:
-            pe = _g(get_info(s), "trailingPE")
+            pe = _g(enriched_info(s), "trailingPE")
             if pe and 0 < pe < 200:
                 pes.append(pe)
         return round(float(np.median(pes)), 1) if pes else None, len(pes)
@@ -1971,7 +1995,7 @@ def peers_compare():
     syms = [clean_ticker(s) for s in (request.args.get("tickers") or "").split(",") if s][:7]
     rows = []
     for s in syms:
-        i = get_info(s)
+        i = enriched_info(s)
         rows.append({"ticker": s, "name": _g(i, "shortName", "longName") or s, "pe": _g(i, "trailingPE"),
                      "pb": _g(i, "priceToBook"), "roe": _pct(_g(i, "returnOnEquity")), "margin": _pct(_g(i, "profitMargins")),
                      "rev_growth": _pct(_g(i, "revenueGrowth")), "marketCap": _g(i, "marketCap")})
