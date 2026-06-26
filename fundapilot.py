@@ -1007,19 +1007,23 @@ def ai_chat(system, user, max_tokens=900):
     endpoint (Groq/OpenRouter/OpenAI/Together) via AI_BASE_URL + AI_API_KEY (+ AI_MODEL)."""
     ak = os.environ.get("ANTHROPIC_API_KEY")
     if ak:
+        model = os.environ.get("AI_MODEL", "claude-3-5-haiku-latest")
         r = requests.post("https://api.anthropic.com/v1/messages",
                           headers={"x-api-key": ak, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-                          json={"model": os.environ.get("AI_MODEL", "claude-haiku-4-5"), "max_tokens": max_tokens,
+                          json={"model": model, "max_tokens": max_tokens,
                                 "system": system, "messages": [{"role": "user", "content": user}]}, timeout=60)
-        r.raise_for_status()
+        if r.status_code >= 400:  # provider error text never contains the key (key is a header)
+            raise RuntimeError(f"Anthropic {r.status_code} (model={model}): {r.text[:280]}")
         return r.json()["content"][0]["text"]
     base, key = os.environ.get("AI_BASE_URL"), os.environ.get("AI_API_KEY")
     if base and key:
+        model = os.environ.get("AI_MODEL", "llama-3.3-70b-versatile")
         r = requests.post(base.rstrip("/") + "/chat/completions",
                           headers={"Authorization": "Bearer " + key, "content-type": "application/json"},
-                          json={"model": os.environ.get("AI_MODEL", "llama-3.3-70b-versatile"), "max_tokens": max_tokens,
+                          json={"model": model, "max_tokens": max_tokens,
                                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}, timeout=60)
-        r.raise_for_status()
+        if r.status_code >= 400:
+            raise RuntimeError(f"AI {r.status_code} (model={model}): {r.text[:280]}")
         return r.json()["choices"][0]["message"]["content"]
     raise RuntimeError("AI not configured")
 
@@ -1817,8 +1821,8 @@ def ai_analyst():
                 "Base only on the data above + general knowledge; don't invent numbers.")
     try:
         return jresp({"enabled": True, "text": ai_chat(AI_SYSTEM, user)})
-    except Exception:
-        return jresp({"enabled": False, "note": "AI request failed — check the API key / provider settings (owner: see Render logs)."}, 502)
+    except Exception as e:
+        return jresp({"enabled": False, "note": "AI request failed — " + str(e)[:300]}, 502)
 
 
 @app.route("/ai_chat", methods=["POST"])
@@ -1835,8 +1839,8 @@ def ai_chat_route():
     user = f"Here is the analysis context:\n{ctx}\n\nUser question: {q}\n\nAnswer as the analyst, grounded in this context; if it's outside the data, say what you'd need."
     try:
         return jresp({"text": ai_chat(AI_SYSTEM, user, 700)})
-    except Exception:
-        return jresp({"error": "AI request failed — check provider settings."}, 502)
+    except Exception as e:
+        return jresp({"error": "AI request failed — " + str(e)[:300]}, 502)
 
 
 @app.route("/ai_compare")
@@ -1864,8 +1868,8 @@ def ai_compare():
                 "QUALITY & RISK EDGE: which is the better business / lower risk\nTECHNICAL EDGE: which has the better trend now\n"
                 "VERDICT: a 2-line call, noting for whom (value vs growth vs safety). Use only the data; don't invent numbers.")
         return jresp({"text": ai_chat(AI_SYSTEM, user)})
-    except Exception:
-        return jresp({"error": "AI compare failed — check provider settings."}, 502)
+    except Exception as e:
+        return jresp({"error": "AI compare failed — " + str(e)[:300]}, 502)
 
 
 @app.route("/universe")
