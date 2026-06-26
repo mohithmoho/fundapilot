@@ -574,6 +574,18 @@ def enriched_info(sym):
     for k, v in _compute_fundamentals(fin, bs, None, fast, price, None).items():
         if _g(info, k) is None and v is not None:
             info[k] = v
+    # dividend yield from the dividends feed (works on cloud) when info lacks it. Inject into the
+    # DECIMAL field (trailingAnnualDividendYield) — div_yield_dec returns it as-is (it divides the
+    # separate `dividendYield` field by 100, so injecting there would be 100x too small).
+    if _g(info, "dividendYield") is None and _g(info, "trailingAnnualDividendYield") is None and price:
+        try:
+            divs = t.dividends
+            if divs is not None and len(divs):
+                last12 = float(divs[divs.index >= (divs.index.max() - pd.Timedelta(days=365))].sum())
+                if last12 > 0:
+                    info["trailingAnnualDividendYield"] = last12 / price  # decimal fraction
+        except Exception:
+            pass
     return info
 
 
@@ -692,9 +704,20 @@ def research_verdict(overall, verdict):
 @lru_cache(maxsize=512)
 def stock_sector(sym):
     try:
-        return get_info(sym).get("sector") or "Other"
+        s = get_info(sym).get("sector")
+        if s:
+            return s
     except Exception:
-        return "Other"
+        pass
+    # fallback: curated-universe sector (sector metadata is in Yahoo's info feed, which is blocked
+    # on cloud IPs — this keeps sector grouping working for known tickers).
+    for cc, secs in UNIVERSE.items():
+        if cc.startswith("Categories"):
+            continue
+        for sec, lst in secs.items():
+            if sym in lst:
+                return sec
+    return "Other"
 
 
 def _closes(syms, period="2y"):
@@ -770,7 +793,7 @@ def portfolio_analytics(holdings, extra_capital=0):
     infos = {}
     for s in have:
         try:
-            infos[s] = get_info(s)
+            infos[s] = enriched_info(s)
         except Exception:
             infos[s] = {}
 
@@ -889,7 +912,7 @@ def _factor_tilt(syms, w, infos=None):
     for i, s in enumerate(syms):
         inf = (infos or {}).get(s)
         if inf is None:
-            inf = get_info(s)
+            inf = enriched_info(s)
         wi = float(w[i])
         pe += wi * (_g(inf, "trailingPE") or 0); pb += wi * (_g(inf, "priceToBook") or 0)
         mc += wi * (_g(inf, "marketCap") or 0); roe += wi * (_g(inf, "returnOnEquity") or 0)
@@ -1591,7 +1614,7 @@ def evaluate_holding(sym, buy, horizon, bench_ret6m):
         if _g(info, k) is None and v is not None:
             info[k] = v
     inst = institutional_metrics(fin, bs, None, _g(info, "marketCap"), _g(info, "ebitda"), None)
-    out["sector"] = _g(info, "sector")
+    out["sector"] = _g(info, "sector") or stock_sector(sym)
     rsi14 = float(rsi(c).iloc[-1])
     sma50 = float(c.rolling(50).mean().iloc[-1])
     sma200 = float(c.rolling(200).mean().iloc[-1]) if len(c) >= 200 else None
