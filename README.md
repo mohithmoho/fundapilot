@@ -71,6 +71,21 @@ FundaPilot runs fully **without** any of this. Turn it on to give users **Google
 
 > Privacy: only the user's own watchlist/history rows are readable (RLS). You store no passwords — Google handles auth. Add a short privacy note to your repo before sharing widely.
 
+## Optional: AI analyst (reasons over the real numbers)
+
+The whole tool is deterministic by default. Turn on the **🧠 AI analyst** to get a portfolio-manager-style *decision + thesis + risks* and a follow-up chat — it reasons **only over the metrics/valuation/technicals this tool already computed** (it's told never to invent numbers). Off by default; the app is unchanged without it.
+
+Pick a provider and set env vars on Render:
+
+- **Free (Groq)** — get a key at console.groq.com, then:
+  - `AI_BASE_URL=https://api.groq.com/openai/v1`
+  - `AI_API_KEY=gsk_…`
+  - `AI_MODEL=llama-3.3-70b-versatile`
+- **Free (OpenRouter)** — `AI_BASE_URL=https://openrouter.ai/api/v1`, `AI_API_KEY=…`, `AI_MODEL=` any free model.
+- **Claude (paid, best quality)** — `ANTHROPIC_API_KEY=…` (optionally `AI_MODEL=claude-haiku-4-5` for cheap, `claude-sonnet-4-6` for stronger).
+
+Calls are **on demand** (only when you click "Ask the AI analyst"), so cost stays controlled. The AI's output is educational reasoning over the data — verify before acting.
+
 ## Security posture
 
 - **No secrets in the repo.** All keys (Supabase, optional FRED/Anthropic) come from environment variables on Render, never committed. The Supabase **anon key is public-by-design** — data is protected by **Row-Level Security** (each user reads only their own rows).

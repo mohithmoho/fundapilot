@@ -958,6 +958,40 @@ def fred_latest():
     return {"enabled": True, "data": out}
 
 
+# ---------------------------- AI analyst (reasons over the REAL computed data) ----------------------------
+AI_SYSTEM = ("You are a buy-side equity analyst and portfolio manager with CFA and CMT training. "
+             "Reason like a disciplined, skeptical PM. Use ONLY the structured analysis data provided plus "
+             "well-established general knowledge — NEVER invent specific numbers, prices or events that aren't given. "
+             "If the data is thin or conflicting, say so. Be decisive but honest about confidence. This is educational, "
+             "not investment advice. Keep answers tight and concrete.")
+
+
+def ai_available():
+    return bool(os.environ.get("ANTHROPIC_API_KEY") or (os.environ.get("AI_API_KEY") and os.environ.get("AI_BASE_URL")))
+
+
+def ai_chat(system, user, max_tokens=900):
+    """Provider-flexible LLM call. Prefers Anthropic if its key is set; otherwise any OpenAI-compatible
+    endpoint (Groq/OpenRouter/OpenAI/Together) via AI_BASE_URL + AI_API_KEY (+ AI_MODEL)."""
+    ak = os.environ.get("ANTHROPIC_API_KEY")
+    if ak:
+        r = requests.post("https://api.anthropic.com/v1/messages",
+                          headers={"x-api-key": ak, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                          json={"model": os.environ.get("AI_MODEL", "claude-haiku-4-5"), "max_tokens": max_tokens,
+                                "system": system, "messages": [{"role": "user", "content": user}]}, timeout=60)
+        r.raise_for_status()
+        return r.json()["content"][0]["text"]
+    base, key = os.environ.get("AI_BASE_URL"), os.environ.get("AI_API_KEY")
+    if base and key:
+        r = requests.post(base.rstrip("/") + "/chat/completions",
+                          headers={"Authorization": "Bearer " + key, "content-type": "application/json"},
+                          json={"model": os.environ.get("AI_MODEL", "llama-3.3-70b-versatile"), "max_tokens": max_tokens,
+                                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}, timeout=60)
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
+    raise RuntimeError("AI not configured")
+
+
 def recommendation(overall, verdict, tech, style_take, weight):
     d = tech.get("daily") or {}
     if overall is None:
@@ -1719,9 +1753,43 @@ def portfolio_eval(holdings, horizon, extra_capital):
 def index():
     # Supabase URL + anon key are public-by-design (RLS protects data). Injected from env so they
     # aren't hardcoded in the repo; if unset, the app runs exactly as before (no login UI).
-    cfg = ("<script>window.SB_URL=%s;window.SB_KEY=%s;</script>"
-           % (json.dumps(os.environ.get("SUPABASE_URL", "")), json.dumps(os.environ.get("SUPABASE_ANON_KEY", ""))))
+    cfg = ("<script>window.SB_URL=%s;window.SB_KEY=%s;window.AI_ON=%s;</script>"
+           % (json.dumps(os.environ.get("SUPABASE_URL", "")), json.dumps(os.environ.get("SUPABASE_ANON_KEY", "")),
+              "true" if ai_available() else "false"))
     return Response(HTML.replace("<!--SBCFG-->", cfg), mimetype="text/html")
+
+
+@app.route("/ai_analyst", methods=["POST"])
+def ai_analyst():
+    if not ai_available():
+        return jresp({"enabled": False, "note": "AI is off on this deployment. Set ANTHROPIC_API_KEY, or a free OpenAI-compatible key (AI_BASE_URL + AI_API_KEY, e.g. Groq) — see README."})
+    ctx = json.dumps((request.get_json(force=True) or {}).get("context") or {})[:6500]
+    user = ("Act as my PM and make a call on this stock from the analysis below.\n\nANALYSIS DATA:\n" + ctx +
+            "\n\nRespond in this structure (plain text, concise):\n"
+            "DECISION: one of Buy / Accumulate / Hold / Reduce / Avoid\n"
+            "THESIS: 2–3 sentences on why\n"
+            "KEY RISKS: 3 bullets\n"
+            "WHAT WOULD CHANGE MY MIND: 1–2 bullets\n"
+            "CONFIDENCE: low / medium / high (+ one line why)\n"
+            "Base everything only on the data above + general knowledge; don't invent numbers.")
+    try:
+        return jresp({"enabled": True, "text": ai_chat(AI_SYSTEM, user)})
+    except Exception as e:
+        return jresp({"enabled": False, "note": f"AI call failed: {e}"}, 500)
+
+
+@app.route("/ai_chat", methods=["POST"])
+def ai_chat_route():
+    if not ai_available():
+        return jresp({"error": "AI not configured."}, 400)
+    d = request.get_json(force=True) or {}
+    q = (d.get("q") or "")[:1000]
+    ctx = json.dumps(d.get("context") or {})[:6000]
+    user = f"Here is the analysis context:\n{ctx}\n\nUser question: {q}\n\nAnswer as the analyst, grounded in this context; if it's outside the data, say what you'd need."
+    try:
+        return jresp({"text": ai_chat(AI_SYSTEM, user, 700)})
+    except Exception as e:
+        return jresp({"error": str(e)}, 500)
 
 
 @app.route("/universe")
@@ -2126,6 +2194,17 @@ const el=id=>document.getElementById(id), out=el('out');
 const fmt=n=>n==null?'—':(Math.abs(n)>=1e7?(n/1e7).toFixed(2)+' Cr':Math.abs(n)>=1e5?(n/1e5).toFixed(2)+' L':Number(n).toLocaleString(undefined,{maximumFractionDigits:2}));
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));  // XSS-safe text for innerHTML
 const safeUrl=u=>/^https?:\/\//i.test(String(u||''))?u:'#';  // block javascript:/data: links
+function aiContext(d){return {name:d.name,ticker:d.ticker,sector:d.sector,industry:d.industry,price:d.price,currency:d.currency,
+  cap_category:d.cap_category,tags:d.tags,overall_score:d.overall,style:d.style,
+  valuation:{verdict:d.valuation.verdict,dcf_verdict:d.valuation.dcf_verdict,margin_of_safety_pct:d.valuation.margin_of_safety_pct,
+    fair_pe:d.valuation.fair_pe,current_pe:d.valuation.current_pe,peg:d.valuation.peg,growth_pct:d.valuation.growth_pct,reverse_dcf_implied_growth:d.valuation.implied_growth_pct},
+  scores:d.scores,
+  ratios:Object.fromEntries(Object.entries(d.ratios||{}).map(([k,v])=>[k,v.value])),
+  quality:d.quality,
+  technical:{daily:d.technical&&d.technical.daily?{rsi:d.technical.daily.rsi,above_ema200:d.technical.daily.above_ema}:null,
+             weekly:d.technical&&d.technical.weekly?{rsi:d.technical.weekly.rsi,above_ema200:d.technical.weekly.above_ema}:null},
+  green_flags:d.green_flags,red_flags:d.red_flags,research:d.research,
+  recent_news:(d.news||[]).slice(0,6).map(n=>n.title)};}
 let charts=[],mode='search',UNI={},MOD={};
 function setMode(m){mode=m;document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x.dataset.tab===m));
   ['search','explore','models','track','markets','watch','me'].forEach(k=>el('m-'+k).style.display=k===m?(k==='search'||k==='explore'?'grid':'block'):'none');
@@ -2344,6 +2423,31 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
     <div class="grid two"><div><h3>Strengths</h3>${(rv.strengths||[]).length?rv.strengths.map(x=>`<div class="flag f-good">${x}</div>`).join(''):'<div class="muted">None detected.</div>'}</div>
     <div><h3>Risks</h3>${(rv.risks||[]).length?rv.risks.map(x=>`<div class="flag f-bad">${x}</div>`).join(''):'<div class="muted">None detected.</div>'}</div></div>
     <div style="margin-top:10px">Verdict: <span class="verdict ${vc}">${rv.verdict}</span> <span class="muted">— ${rv.why}</span></div></section>`));
+
+  // 🧠 AI analyst — reasons over the real computed data (on demand)
+  out.append($(`<section class="glass"><h2>🧠 AI analyst <span class="muted">— reasons over the numbers above</span></h2>
+    ${window.AI_ON?`<button class="dl" id="ai-go">🧠 Ask the AI analyst for a decision</button>
+      <span class="muted"> grounded in this stock's computed analysis (no made-up numbers)</span>
+      <div id="ai-out" style="margin-top:10px"></div>
+      <div class="ac" style="max-width:560px;margin-top:10px"><label>Ask a follow-up (e.g. "is the debt a worry?", "compare to a 5-year hold")</label>
+        <div style="display:flex;gap:8px"><input id="ai-q" placeholder="Type a question…"><button class="dl" id="ai-ask" style="margin:0">Ask</button></div></div>
+      <div id="ai-chat" style="margin-top:8px"></div>`
+    :`<p class="muted">The AI analyst is <b>off</b> on this deployment. It thinks over the real metrics/valuation/technicals this tool computes and gives a PM-style decision. To switch it on (your choice of provider, incl. a <b>free</b> one):<br>
+      • <b>Free</b>: a Groq key → set <code>AI_BASE_URL=https://api.groq.com/openai/v1</code>, <code>AI_API_KEY=…</code>, <code>AI_MODEL=llama-3.3-70b-versatile</code><br>
+      • <b>Claude</b>: set <code>ANTHROPIC_API_KEY=…</code> (optionally <code>AI_MODEL=claude-haiku-4-5</code>)<br>
+      Add these as Render env vars (see README) — everything else keeps working without it.</p>`}</section>`));
+  if(window.AI_ON){
+    const ctx=aiContext(d);
+    el('ai-go').onclick=async()=>{const o2=el('ai-out');o2.innerHTML='<div class="spin"></div><p class="muted" style="text-align:center">Thinking…</p>';
+      try{const r=await(await fetch('/ai_analyst',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({context:ctx})})).json();
+        o2.innerHTML=r.text?`<div class="rec" style="white-space:pre-wrap;line-height:1.55">${esc(r.text)}</div><p class="muted">AI reasoning over this tool's computed data — verify before acting. Educational only.</p>`:`<p class="muted">${esc(r.note||'No response.')}</p>`;
+      }catch(e){o2.innerHTML='<p class="muted">AI call failed.</p>';}};
+    el('ai-ask').onclick=async()=>{const q=el('ai-q').value.trim();if(!q)return;const cc=el('ai-chat');
+      cc.innerHTML='<div class="flag" style="background:rgba(110,168,254,.1)"><b>You:</b> '+esc(q)+'</div><div class="spin"></div>';
+      try{const r=await(await fetch('/ai_chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({q,context:ctx})})).json();
+        cc.innerHTML='<div class="flag" style="background:rgba(110,168,254,.1)"><b>You:</b> '+esc(q)+'</div>'+(r.text?`<div class="flag f-good" style="white-space:pre-wrap">🧠 ${esc(r.text)}</div>`:`<div class="muted">${esc(r.error||'No answer.')}</div>`);
+      }catch(e){cc.innerHTML='<p class="muted">AI call failed.</p>';}};
+  }
 
   // institutional quality & solvency highlight
   const q=d.quality||{};
