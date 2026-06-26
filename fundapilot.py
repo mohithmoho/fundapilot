@@ -1881,6 +1881,32 @@ def technicals():
         return jresp({"error": f"Technicals failed: {e}"}, 500)
 
 
+@app.route("/price_stats")
+def price_stats():
+    """Period high / low / average / change over a chosen range (1M…Max/ATH) + a price series."""
+    sym = clean_ticker(request.args.get("ticker"))
+    market = request.args.get("market", "NSE")
+    if market in ("NSE", "BSE") and not sym.endswith((".NS", ".BO")):
+        sym += ".NS" if market == "NSE" else ".BO"
+    rng = request.args.get("rng", "1y")
+    period, interval = {"1mo": ("1mo", "1d"), "3mo": ("3mo", "1d"), "6mo": ("6mo", "1d"), "1y": ("1y", "1d"),
+                        "5y": ("5y", "1wk"), "10y": ("10y", "1wk"), "max": ("max", "1mo")}.get(rng, ("1y", "1d"))
+    try:
+        df = yf.Ticker(sym).history(period=period, interval=interval).dropna()
+        if df.empty:
+            return jresp({"error": "No data for this range."}, 404)
+        c, hi, lo = df["Close"], df["High"], df["Low"]
+        n = min(len(c), 220)
+        return jresp({"rng": rng, "high": round(float(hi.max()), 2), "low": round(float(lo.min()), 2),
+                      "avg": round(float(c.mean()), 2), "last": round(float(c.iloc[-1]), 2),
+                      "change_pct": round(float(c.iloc[-1] / c.iloc[0] - 1) * 100, 1),
+                      "high_date": str(hi.idxmax().date()), "low_date": str(lo.idxmin().date()),
+                      "series": [round(float(x), 2) for x in c.tail(n)],
+                      "dates": [str(d.date()) for d in c.tail(n).index]})
+    except Exception as e:
+        return jresp({"error": str(e)}, 500)
+
+
 @app.route("/industry_pe")
 def industry_pe_route():
     sym = clean_ticker(request.args.get("ticker"))
@@ -2067,7 +2093,8 @@ details summary{cursor:pointer;color:var(--mut);font-size:13px}.disc{font-size:1
   </div>
   <div id="m-search" class="panel">
     <div class="full ac"><label>Company / ticker</label><input id="ticker" placeholder="Type e.g. Reliance, HAL, Apple…" autocomplete="off">
-      <div class="acbox" id="acbox"></div><div class="hint">Pick a suggestion, or type a symbol. NSE adds .NS automatically.</div></div>
+      <div class="acbox" id="acbox"></div><div class="hint">Pick a suggestion, or type a symbol. NSE adds .NS automatically.</div>
+      <div id="quoteprev" style="margin-top:6px;font-size:14px"></div></div>
     <div><label>Market</label><select id="market"><option>NSE</option><option>BSE</option><option>Global</option></select></div>
   </div>
   <div id="m-explore" class="panel" style="display:none">
@@ -2123,31 +2150,46 @@ function paintAuth(){const bar=el('authbar');if(!bar)return;
   else{bar.innerHTML=`<button id="login">🔐 Sign in with Google</button>`;
     el('login').onclick=()=>SB.auth.signInWithOAuth({provider:'google',options:{redirectTo:window.location.origin}});}}
 function gotoTicker(t){el('ticker').value=t.replace('.NS','').replace('.BO','');el('market').value=t.endsWith('.BO')?'BSE':t.endsWith('.NS')?'NSE':'Global';setMode('search');el('go').click();}
+let activeList=localStorage.getItem('fp_activelist')||'My Watchlist';
 async function addWatch(ticker,name,fav,quiet){if(!SB){alert('Sign in (top-right) to save watchlists.');return false;}if(!USER){alert('Please sign in with Google first.');return false;}
-  const {error}=await SB.from('watchlist').upsert({user_id:USER.id,ticker,name:name||null},{onConflict:'user_id,ticker'});
+  let row={user_id:USER.id,ticker,name:name||null,list_name:activeList};
+  let {error}=await SB.from('watchlist').upsert(row,{onConflict:'user_id,ticker'});
+  if(error&&/list_name|column/i.test(error.message)){delete row.list_name;({error}=await SB.from('watchlist').upsert(row,{onConflict:'user_id,ticker'}));}
   if(error){alert('Could not save: '+error.message);return false;}
   if(fav){await setFav(ticker,true,true);}
-  if(!quiet)alert((fav?'Added to favorites: ':'Saved to watchlist: ')+ticker);
+  if(!quiet)alert((fav?'Added to favorites: ':'Saved to “'+activeList+'”: ')+ticker);
   return true;}
 async function setFav(ticker,on,quiet){if(!SB||!USER)return;
   const {error}=await SB.from('watchlist').update({fav:on}).eq('user_id',USER.id).eq('ticker',ticker);
   if(error&&!quiet)alert('To use favorites, run the one-line SQL in the README (add "fav" column). '+error.message);}
 function saveWatch(t,n){return addWatch(t,n,false);}      // back-compat
 function favWatch(t,n){return addWatch(t,n,true);}
-// reusable personal-watchlist block (search-to-add + saved list + favorites). pfx keeps ids unique per container.
+// reusable personal-watchlist block: multiple named lists + live price/day% + favorites. pfx keeps ids unique.
 function renderMyWatch(box,pfx){
-  if(!SB){box.innerHTML='<section class="glass"><h2>⭐ My watchlist</h2><p class="muted">Sign in (top-right) to build a personal watchlist & favorites that sync across your devices.</p></section>';return;}
-  if(!USER){box.innerHTML='<section class="glass"><h2>⭐ My watchlist</h2><p class="muted">Sign in with Google (top-right) to add companies to your watchlist.</p></section>';return;}
-  box.innerHTML=`<section class="glass"><h2>⭐ My watchlist &amp; favorites</h2>
-    <div class="ac" style="max-width:460px"><label>Search a company to add</label>
+  if(!SB){box.innerHTML='<section class="glass"><h2>⭐ My watchlists</h2><p class="muted">Sign in (top-right) to build personal watchlists & favorites that sync across your devices.</p></section>';return;}
+  if(!USER){box.innerHTML='<section class="glass"><h2>⭐ My watchlists</h2><p class="muted">Sign in with Google (top-right) to add companies.</p></section>';return;}
+  box.innerHTML=`<section class="glass"><h2>⭐ My watchlists &amp; favorites</h2>
+    <div class="panel" style="grid-template-columns:1fr auto;align-items:end;max-width:560px">
+      <div><label>List</label><select id="${pfx}lst"></select></div>
+      <button id="${pfx}new" class="dl" style="margin:0">＋ New list</button></div>
+    <div class="ac" style="max-width:460px;margin-top:10px"><label>Search a company to add to this list</label>
       <input id="${pfx}sym" placeholder="Type e.g. Reliance, HAL, Apple…" autocomplete="off"><div class="acbox" id="${pfx}box"></div></div>
     <div id="${pfx}list" style="margin-top:12px"><div class="spin"></div></div></section>`;
   acWire(pfx+'sym',pfx+'box',async sym=>{el(pfx+'sym').value='';const ok=await addWatch(sym,null,false,true);if(ok)loadMyWatch(pfx);});
+  el(pfx+'new').onclick=()=>{const n=(prompt('Name your new watchlist:')||'').trim();if(n){activeList=n;localStorage.setItem('fp_activelist',n);loadMyWatch(pfx);}};
   loadMyWatch(pfx);}
 async function loadMyWatch(pfx){const box=el(pfx+'list');if(!box)return;
   const wl=await SB.from('watchlist').select('*').order('added_at',{ascending:false});const rows=wl.data||[];
-  let h=rows.length?'<table><tr><th>Ticker</th><th>Name</th><th>Fav</th><th></th><th></th></tr>'+rows.map(r=>`<tr><td>${r.ticker.replace('.NS','').replace('.BO','')}</td><td>${r.name||''}</td><td><a href="#" class="favt" data-t="${r.ticker}" data-f="${r.fav?1:0}" style="text-decoration:none">${r.fav?'❤️':'🤍'}</a></td><td><a href="#" class="wlgo" data-t="${r.ticker}">Analyze</a></td><td><a href="#" class="wlrm" data-t="${r.ticker}">✕</a></td></tr>`).join('')+'</table><p class="muted">🤍 → ❤️ marks a favorite. Click Analyze to load it.</p>':'<p class="muted">Empty — search above, or hit ★/❤️ on a stock you analyze.</p>';
-  box.innerHTML=h;
+  const lists=[...new Set(rows.map(r=>r.list_name||'My Watchlist'))];if(!lists.includes(activeList))lists.unshift(activeList);
+  const sel=el(pfx+'lst');if(sel){sel.innerHTML=lists.map(l=>`<option ${l===activeList?'selected':''}>${esc(l)}</option>`).join('');
+    sel.onchange=()=>{activeList=sel.value;localStorage.setItem('fp_activelist',activeList);loadMyWatch(pfx);};}
+  const mine=rows.filter(r=>(r.list_name||'My Watchlist')===activeList);
+  if(!mine.length){box.innerHTML='<p class="muted">“'+esc(activeList)+'” is empty — search above to add, or hit ★/❤️ on a stock you analyze.</p>';return;}
+  let q={};try{q=await(await fetch('/quote?tickers='+encodeURIComponent(mine.map(r=>r.ticker).join(',')))).json();}catch(e){}
+  let h='<table><tr><th>Ticker</th><th>Name</th><th>Price</th><th>Day%</th><th>Fav</th><th></th><th></th></tr>';
+  mine.forEach(r=>{const x=q[r.ticker];const cur=/\.(NS|BO)$/.test(r.ticker)?'₹':'';const day=(x&&x.prev)?((x.price-x.prev)/x.prev*100):null;
+    h+=`<tr><td>${r.ticker.replace('.NS','').replace('.BO','')}</td><td>${esc(r.name||'')}</td><td>${x?cur+fmt(x.price):'—'}</td><td class="${(day||0)>=0?'pos':'neg'}">${day==null?'—':(day>=0?'+':'')+day.toFixed(2)+'%'}</td><td><a href="#" class="favt" data-t="${r.ticker}" data-f="${r.fav?1:0}" style="text-decoration:none">${r.fav?'❤️':'🤍'}</a></td><td><a href="#" class="wlgo" data-t="${r.ticker}">Analyze</a></td><td><a href="#" class="wlrm" data-t="${r.ticker}">✕</a></td></tr>`;});
+  box.innerHTML=h+'</table><p class="muted">Live price &amp; day change shown without analyzing. 🤍→❤️ favorite · ✕ remove from this list. Use ＋ New list to create more.</p>';
   box.querySelectorAll('.wlgo').forEach(a=>a.onclick=e=>{e.preventDefault();gotoTicker(a.dataset.t);});
   box.querySelectorAll('.wlrm').forEach(a=>a.onclick=async e=>{e.preventDefault();await SB.from('watchlist').delete().eq('user_id',USER.id).eq('ticker',a.dataset.t);loadMyWatch(pfx);});
   box.querySelectorAll('.favt').forEach(a=>a.onclick=async e=>{e.preventDefault();await setFav(a.dataset.t,a.dataset.f!=='1');loadMyWatch(pfx);});}
@@ -2187,8 +2229,20 @@ function acWire(inputId,boxId,onPick){let t;const inp=el(inputId),box=el(boxId);
       box.style.display='block';
       box.querySelectorAll('div').forEach(d=>d.onclick=()=>{box.style.display='none';onPick(d.dataset.sym);});},250);});}
 acWire('ticker','acbox',sym=>{el('ticker').value=sym.replace('.NS','').replace('.BO','');
-  el('market').value=sym.endsWith('.BO')?'BSE':sym.endsWith('.NS')?'NSE':'Global';});
+  el('market').value=sym.endsWith('.BO')?'BSE':sym.endsWith('.NS')?'NSE':'Global';showQuotePreview();});
 document.addEventListener('click',e=>{if(!e.target.closest('.ac'))document.querySelectorAll('.acbox').forEach(b=>b.style.display='none');});
+function resolveTicker(){let t=(el('ticker').value||'').trim().toUpperCase();const m=el('market').value;
+  if((m==='NSE'||m==='BSE')&&t&&!/\.(NS|BO)$/.test(t))t+=(m==='NSE'?'.NS':'.BO');return t;}
+let qpT;
+async function showQuotePreview(){const box=el('quoteprev');if(!box)return;const t=resolveTicker();
+  if(!t){box.innerHTML='';return;}box.innerHTML='<span class="muted">Fetching live price…</span>';
+  try{const q=await(await fetch('/quote?tickers='+encodeURIComponent(t))).json();const x=q[t];
+    if(!x||x.price==null){box.innerHTML='<span class="muted">No live quote — press Analyze.</span>';return;}
+    const cur=/\.(NS|BO)$/.test(t)?'₹':'';const day=x.prev?((x.price-x.prev)/x.prev*100):0;
+    box.innerHTML=`<b>${esc(t.replace('.NS','').replace('.BO',''))}</b> · <b>${cur}${fmt(x.price)}</b> <span class="${day>=0?'pos':'neg'}">${day>=0?'▲ +':'▼ '}${day.toFixed(2)}% today</span> <span class="muted">— press Analyze for the full report</span>`;
+  }catch(e){box.innerHTML='';}}
+el('ticker').addEventListener('blur',()=>{clearTimeout(qpT);qpT=setTimeout(showQuotePreview,150);});
+el('market').addEventListener('change',showQuotePreview);
 
 el('go').onclick=async()=>{let ticker,market;
   if(mode==='explore'){const s=el('ex-company').value;ticker=s;market=s.endsWith('.NS')?'NSE':s.endsWith('.BO')?'BSE':'Global';}
@@ -2364,6 +2418,15 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
     document.getElementById('tfseg').querySelectorAll('button').forEach(x=>x.classList.remove('on'));b.classList.add('on');loadTechnicals(d.ticker,d.currency,b.dataset.tf);});
   loadTechnicals(d.ticker,d.currency,'daily');
 
+  // price range & period stats (high/low/avg/change over 1M…Max/ATH)
+  const RNGS=[['1mo','1M'],['6mo','6M'],['1y','1Y'],['5y','5Y'],['10y','10Y'],['max','Max / ATH']];
+  out.append($(`<section class="glass"><h2>📅 Price range &amp; period stats</h2>
+    <div class="seg" id="rngseg">${RNGS.map(([r,l],i)=>`<button data-r="${r}" class="${i==2?'on':''}">${l}</button>`).join('')}</div>
+    <div id="rngout" style="margin-top:10px"><div class="spin"></div></div></section>`));
+  document.getElementById('rngseg').querySelectorAll('button').forEach(b=>b.onclick=()=>{
+    document.getElementById('rngseg').querySelectorAll('button').forEach(x=>x.classList.remove('on'));b.classList.add('on');loadRange(d.ticker,d.currency,b.dataset.r);});
+  loadRange(d.ticker,d.currency,'1y');
+
   if(d.history&&Object.keys(d.history).length){out.append($('<section class="glass"><h2>Historical statements <span class="muted">— in '+cur+' Crore (Cr) / Lakh (L)</span></h2><canvas id="cH" height="120"></canvas></section>'));drawHist('cH',d.history,cur);}
 
   let st='<section class="glass"><h2>Investor-style fit</h2><div class="grid two">';
@@ -2462,6 +2525,19 @@ async function loadTechnicals(ticker,cur,tf){const box=el('taout');if(!box)retur
   h+=`<p class="muted">${t.note}</p>`;
   box.innerHTML=h;drawTA('cTA',t);}
 
+async function loadRange(ticker,cur,rng){const box=el('rngout');if(!box)return;box.innerHTML='<div class="spin"></div>';
+  let s;try{s=await(await fetch(`/price_stats?ticker=${encodeURIComponent(ticker)}&market=Global&rng=${rng}`)).json();}catch(e){box.innerHTML='<p class="muted">Unavailable.</p>';return;}
+  if(s.error){box.innerHTML=`<p class="muted">${esc(s.error)}</p>`;return;}
+  const lbl={'1mo':'1 month','6mo':'6 months','1y':'1 year','5y':'5 years','10y':'10 years','max':'all time'}[rng]||rng;
+  const ath=rng==='max';
+  box.innerHTML=`<div class="grid cards">
+    <div class="chip">${ath?'All-time high':'Period high'}<b>${cur}${fmt(s.high)}</b><span class="muted">${s.high_date}</span></div>
+    <div class="chip">${ath?'All-time low':'Period low'}<b>${cur}${fmt(s.low)}</b><span class="muted">${s.low_date}</span></div>
+    <div class="chip">Average price<b>${cur}${fmt(s.avg)}</b></div>
+    <div class="chip">Change (${lbl})<b class="${s.change_pct>=0?'pos':'neg'}">${s.change_pct>=0?'+':''}${s.change_pct}%</b><span class="muted">now ${cur}${fmt(s.last)}</span></div></div>
+    <canvas id="cRNG" height="130" style="margin-top:10px"></canvas>`;
+  charts.push(new Chart(el('cRNG'),{type:'line',data:{labels:s.dates,datasets:[{label:'Close',data:s.series,borderColor:'#6ea8fe',borderWidth:1.5,pointRadius:0,tension:.15}]},
+    options:{plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>cur+fmt(ctx.parsed.y)}}},scales:{x:{ticks:{color:'#8b97ad',maxTicksLimit:6}},y:{ticks:{color:'#8b97ad',callback:v=>cur+fmt(v)}}}}}));}
 async function loadPeerEval(sector,sym,hq,cid,cache){const box=el(cid);if(!box)return;
   let data=cache[sector];
   if(!data){try{data=await(await fetch(`/peer_eval?country=India&sector=${encodeURIComponent(sector)}&exclude=${encodeURIComponent(sym)}`)).json();}catch(e){box.innerHTML='<span class="muted">Peers unavailable.</span>';return;}cache[sector]=data;}
@@ -2483,25 +2559,29 @@ function drawTA(id,t){const c=t.chart,base=c.base;
     options:{plugins:{legend:{labels:{color:'#8b97ad',boxWidth:10}}},scales:{x:{ticks:{color:'#8b97ad',maxTicksLimit:6}},y:{ticks:{color:'#8b97ad'}}}}}));}
 
 // ---- model portfolios: sector allocation, then drill into strong companies ----
+let curSec=null;
 function renderModels(){const cap=+el('capital').value||100000;
-  let h=`<section class="glass"><h2>📊 Model portfolios — sector allocation</h2><p class="muted">How capital is split across <b>sectors</b> for each risk profile (equity only, ₹${fmt(cap)}). Click a sector to load <b>fundamentally strong</b> companies in it. Templates, not live-trend forecasts.</p>`;
+  let h=`<section class="glass"><h2>📊 Model portfolios — sector allocation</h2><p class="muted">How capital is split across <b>sectors</b> for each risk profile (equity only, ₹${fmt(cap)}). Pick a ranking, then click any sector to load strong companies. Templates, not live-trend forecasts.</p>
+    <div style="margin:6px 0 14px"><label>Rank strong picks by</label><select id="tilt" style="max-width:260px">
+      <option value="fundamental">Fundamentally strong (quality)</option><option value="dividend">Dividend yield</option>
+      <option value="momentum">Momentum (6-month)</option><option value="lowbeta">Low beta (stable)</option></select>
+      <span class="muted" id="tilthint"> — changing this re-ranks the picks instantly</span></div>`;
   for(const[name,m]of Object.entries(MOD)){h+=`<h3>${name} — <span class="muted">${m.note}</span></h3><table><tr><th>Sector</th><th>Weight</th><th>Amount</th><th></th></tr>`;
     for(const[sec,wt]of Object.entries(m.weights))
-      h+=`<tr><td>${sec}</td><td>${wt}%</td><td>₹${fmt(cap*wt/100)}</td><td><button class="secbtn" data-sec="${sec}" style="padding:5px 10px;font-size:12px">View strong picks ▸</button></td></tr>`;
+      h+=`<tr><td>${sec}</td><td>${wt}%</td><td>₹${fmt(cap*wt/100)}</td><td><button class="secbtn dl" data-sec="${sec}" style="padding:6px 12px;font-size:12px;margin:0">View strong picks ▸</button></td></tr>`;
     h+='</table>';}
-  h+=`<div style="margin-top:14px"><label>Rank strong picks by</label><select id="tilt" style="max-width:240px">
-    <option value="fundamental">Fundamentally strong (quality)</option><option value="dividend">Dividend</option>
-    <option value="momentum">Momentum (6-month)</option><option value="lowbeta">Low beta (stable)</option></select></div>
-    <div id="secpicks"></div></section>`;
+  h+='<div id="secpicks" style="margin-top:8px"></div></section>';
   el('m-models').innerHTML=h;
-  el('m-models').querySelectorAll('.secbtn').forEach(b=>b.onclick=()=>loadSectorPicks(b.dataset.sec));}
+  el('m-models').querySelectorAll('.secbtn').forEach(b=>b.onclick=()=>{curSec=b.dataset.sec;loadSectorPicks(curSec);});
+  el('tilt').onchange=()=>{if(curSec)loadSectorPicks(curSec);};}
 async function loadSectorPicks(sec){const tilt=el('tilt')?el('tilt').value:'fundamental';
-  el('secpicks').innerHTML=`<div class="spin"></div>`;
+  const box=el('secpicks');box.innerHTML=`<div class="spin"></div>`;
   const d=await(await fetch(`/sector_top?country=India&sector=${encodeURIComponent(sec)}&tilt=${tilt}`)).json();
-  if(d.error){el('secpicks').innerHTML=`<p class="muted">${d.error}</p>`;return;}
-  let t=`<h3>${sec} — strong companies (by ${tilt})</h3><table><tr><th>Company</th><th>Quality/10</th><th>P/E</th><th>ROE%</th><th>Div%</th><th>6m%</th><th>Beta</th><th>Tags</th></tr>`;
-  d.rows.forEach(r=>t+=`<tr><td>${r.name||r.ticker} <span class="muted">${r.ticker.replace('.NS','')}</span></td><td>${r.quality??'—'}</td><td>${fmt(r.pe)}</td><td>${fmt(r.roe)}</td><td>${fmt(r.div)}</td><td>${fmt(r.momentum_6m)}</td><td>${fmt(r.beta)}</td><td>${(r.tags||[]).map(x=>`<span class="tag">${x}</span>`).join('')}</td></tr>`);
-  el('secpicks').innerHTML=t+'</table><p class="muted">Quality = blend of ROE, margin, low debt, valuation, free cash flow. Click a sector again after changing the rank dropdown.</p>';}
+  if(d.error){box.innerHTML=`<p class="muted">${esc(d.error)}</p>`;return;}
+  const tlabel={fundamental:'fundamental quality',dividend:'dividend yield',momentum:'6-month momentum',lowbeta:'low beta'}[tilt]||tilt;
+  let t=`<h3>${esc(sec)} — ranked by ${tlabel}</h3><table><tr><th>Company</th><th>Quality/10</th><th>P/E</th><th>ROE%</th><th>Div%</th><th>6m%</th><th>Beta</th><th>Tags</th></tr>`;
+  d.rows.forEach(r=>t+=`<tr><td>${esc(r.name||r.ticker)} <span class="muted">${r.ticker.replace('.NS','')}</span></td><td>${r.quality??'—'}</td><td>${fmt(r.pe)}</td><td>${fmt(r.roe)}</td><td>${fmt(r.div)}</td><td>${fmt(r.momentum_6m)}</td><td>${fmt(r.beta)}</td><td>${(r.tags||[]).map(x=>`<span class="tag">${esc(x)}</span>`).join('')}</td></tr>`);
+  box.innerHTML=t+'</table><p class="muted">Quality = blend of ROE, margin, low debt, valuation, free cash flow. Change the “Rank by” dropdown above to re-rank instantly.</p>';}
 
 // ---- live portfolio tracker ----
 const PKEY='stocklens_portfolio';
@@ -2514,12 +2594,17 @@ function renderTracker(){const p=loadPort();
     <div class="panel"><div class="ac"><label>Ticker</label><input id="t-sym" placeholder="Type e.g. HAL, Apple…" autocomplete="off"><div class="acbox" id="t-acbox"></div></div>
     <div><label>Qty</label><input id="t-qty" type="number" min="0"></div><div><label>Buy price</label><input id="t-buy" type="number" min="0"></div>
     <div><label>Alert if ± %</label><input id="t-alert" type="number" value="10" min="0"></div><button id="t-add">Add holding</button></div>
-    <div class="panel" style="margin-top:10px"><div><label>Total capital for rebalancing (₹, manual)</label><input id="t-cap" type="number" min="0" value="${localStorage.getItem(CKEY)||200000}"></div>
-    <div><label>Extra cash to deploy (₹)</label><input id="t-extra" type="number" min="0" value="0"></div>
-    <div><label>Investment horizon</label><select id="t-hz"><option value="short">Short (≤3y)</option><option value="medium" selected>Medium (3–7y)</option><option value="long">Long (7y+)</option></select></div></div>
+    <div class="panel" style="margin-top:10px"><div><label>Total capital (₹) <span class="tip" data-tip="Your overall investable corpus. Used as the base for position-sizing suggestions.">ⓘ</span></label><input id="t-cap" type="number" min="0" value="${localStorage.getItem(CKEY)||200000}"></div>
+    <div><label>Extra cash to deploy (₹) <span class="tip" data-tip="New money you want to add right now. The rebalancer routes it to the strongest / below-buy names.">ⓘ</span></label><input id="t-extra" type="number" min="0" value="0"></div>
+    <div><label>Investment horizon <span class="tip" data-tip="How long you plan to hold. Sets the SL/TP window and how patiently weak names are treated.">ⓘ</span></label><select id="t-hz"><option value="short">Short (≤3y)</option><option value="medium" selected>Medium (3–7y)</option><option value="long">Long (7y+)</option></select></div></div>
     <div style="margin:10px 0"><button id="t-eval" class="full" style="margin-bottom:8px">🎯 Evaluate &amp; rebalance my portfolio</button>
     <button id="t-opt" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">🧮 Quant analytics</button>
-    <button id="t-notif" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">🔔 Enable alerts</button> <button id="t-refresh" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">↻ Refresh now</button> <span class="muted">Auto-refreshes every 60s.</span></div>
+    <button id="t-notif" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">🔔 Enable alerts</button> <button id="t-refresh" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">↻ Refresh now</button></div>
+    <div class="muted" style="font-size:12px;margin-bottom:8px">
+      <b>🎯 Evaluate &amp; rebalance</b>: rates every holding (fundamentals + technicals), gives a final verdict, SL/TP and what to buy/sell/switch. ·
+      <b>🧮 Quant analytics</b>: portfolio-level maths — Sharpe, VaR, Monte-Carlo, efficient frontier, correlation. ·
+      <b>🔔 Alerts</b>: browser pop-ups when a holding moves past your ±% threshold. ·
+      <b>↻ Refresh</b>: re-pull live prices (auto every 60s).</div>
     <div id="t-table"><div class="muted">No holdings yet — add one above.</div></div></section>
     <div id="t-eval-out"></div><div id="t-opt-out"></div><div id="t-news"></div>`;
   el('m-track').innerHTML=h;

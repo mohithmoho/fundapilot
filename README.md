@@ -58,8 +58,9 @@ FundaPilot runs fully **without** any of this. Turn it on to give users **Google
    create policy "own history" on public.search_history for all
      using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
-   -- enables the ❤️ favorites toggle (one extra line):
+   -- enables the ❤️ favorites toggle and 📂 multiple named watchlists (two extra lines):
    alter table public.watchlist add column if not exists fav boolean default false;
+   alter table public.watchlist add column if not exists list_name text default 'My Watchlist';
    ```
 3. **Enable Google login:** Supabase → Authentication → Providers → **Google** → enable. It asks for a Google **Client ID + Secret** — make them in **Google Cloud Console → Credentials → OAuth client (Web)**, with **Authorized redirect URI** = `https://<your-project-ref>.supabase.co/auth/v1/callback`. Paste them back into Supabase.
 4. Supabase → Authentication → **URL Configuration**: set **Site URL** to `https://fundapilot.onrender.com` and add it to **Redirect URLs**.
