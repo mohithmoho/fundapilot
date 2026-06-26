@@ -1818,6 +1818,23 @@ def ai_analyst():
         user = ("These are WATCHLIST candidates with their evaluation. Act as my PM.\n\nDATA:\n" + ctx +
                 "\n\nRespond (plain text):\nTOP PICKS TO RESEARCH NOW: rank up to 3 with a one-line reason each\nAVOID/WAIT: any clear passes and why\n"
                 "ONE-LINE TAKEAWAY. Base only on the data given; don't invent numbers.")
+    elif mode == "bear":
+        user = ("Play devil's advocate on this stock — argue ONLY the BEAR CASE.\n\nDATA:\n" + ctx +
+                "\n\nRespond (plain text):\nBEAR THESIS: why this could disappoint or be a value trap\nKEY DOWNSIDE RISKS: 3–4 bullets\n"
+                "RED FLAGS IN THE DATA: anything weak (debt, margins, valuation, trend)\nWHAT BULLS MAY BE IGNORING: 1–2 bullets\n"
+                "STRONGEST REASON NOT TO OWN IT: one line. Use only the data + general knowledge; don't invent numbers.")
+    elif mode == "news":
+        user = ("Summarize what the recent NEWS means for this stock.\n\nDATA (headlines + analysis):\n" + ctx +
+                "\n\nRespond (plain text):\nWHAT MATTERS: 2–3 bullets drawn from the headlines\nNET READ: positive / neutral / negative + why\n"
+                "WATCH NEXT: 1–2 things. If the headlines are thin, say so. Summarize ONLY the given headlines — do not invent news.")
+    elif mode == "risk":
+        user = ("Give a plain-English RISK BRIEFING for this PORTFOLIO from the metrics.\n\nDATA:\n" + ctx +
+                "\n\nRespond (plain text):\nBIGGEST RISKS: ranked, drawn from beta / VaR / max-drawdown / sector concentration / correlation\n"
+                "WHAT A BAD MONTH LOOKS LIKE: 1–2 lines grounded in the numbers\nWAYS TO CUT RISK: 2–3 concrete moves. Use only the numbers given.")
+    elif mode == "coach":
+        user = ("Act as a coach reviewing this investor's PAST CALLS (analysis journal).\n\nJOURNAL DATA:\n" + ctx +
+                "\n\nRespond (plain text):\nWHAT'S WORKING: patterns in the wins\nWHAT'S NOT: patterns in the misses\n"
+                "3 CONCRETE HABITS TO IMPROVE. Be candid but constructive. Use only the data given; if it's thin, say what to log more of.")
     else:
         user = ("Act as my PM and make a call on this stock from the analysis below.\n\nANALYSIS DATA:\n" + ctx +
                 "\n\nRespond (plain text, concise):\nDECISION: Buy / Accumulate / Hold / Reduce / Avoid\nTHESIS: 2–3 sentences\n"
@@ -1874,6 +1891,42 @@ def ai_compare():
         return jresp({"text": ai_chat(AI_SYSTEM, user)})
     except Exception as e:
         return jresp({"error": "AI compare failed — " + str(e)[:300]}, 502)
+
+
+@app.route("/ai_sector_pick")
+def ai_sector_pick():
+    if not ai_available():
+        return jresp({"error": "AI not configured."}, 400)
+    ip = (request.headers.get("X-Forwarded-For", request.remote_addr or "?")).split(",")[0].strip()
+    ok, why = ai_rate_ok(ip)
+    if not ok:
+        return jresp({"error": why}, 429)
+    ticker = clean_ticker(request.args.get("ticker"))
+    peers, sec = find_peers(ticker, request.args.get("sector"))
+    syms = [ticker] + [p for p in peers if p != ticker][:5]
+    bench = "^NSEI" if any(s.endswith((".NS", ".BO")) for s in syms) else "^GSPC"
+    bret = None
+    try:
+        bc = yf.Ticker(bench).history(period="1y")["Close"].dropna()
+        if len(bc) > 126:
+            bret = float(bc.iloc[-1] / bc.iloc[-126] - 1) * 100
+    except Exception:
+        pass
+
+    def compact(e):
+        keep = ["sym", "name", "health", "verdict", "fund_score", "tech_score", "pe", "pb", "roe_pct", "roce_pct",
+                "ev_ebitda", "net_margin_pct", "earnings_cagr_3y", "de", "rsi", "above_200dma", "rel_strength_6m"]
+        return {k: e.get(k) for k in keep if k in e}
+    try:
+        cands = [compact(e) for e in (evaluate_holding(s, 0, "medium", bret) for s in syms) if "error" not in e]
+        ctx = json.dumps({"sector": sec, "your_stock": ticker.replace(".NS", "").replace(".BO", ""), "candidates": cands})[:6800]
+        user = ("Across these SAME-SECTOR names, pick the best on FUNDAMENTALS and TECHNICALS combined.\n\nDATA:\n" + ctx +
+                "\n\nRespond (plain text):\nBEST OVERALL: ticker — why (quality + valuation + trend)\nBEST VALUE: ticker — cheapest for its quality\n"
+                "BEST MOMENTUM/TECHNICAL: ticker — strongest trend\nHOW YOUR STOCK RANKS: where the user's stock sits vs peers\n"
+                "ONE-LINE TAKEAWAY. Use only the data; don't invent numbers.")
+        return jresp({"text": ai_chat(AI_SYSTEM, user), "sector": sec})
+    except Exception as e:
+        return jresp({"error": "AI sector pick failed — " + str(e)[:300]}, 502)
 
 
 @app.route("/universe")
@@ -2279,6 +2332,11 @@ const fmt=n=>n==null?'—':(Math.abs(n)>=1e7?(n/1e7).toFixed(2)+' Cr':Math.abs(n
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));  // XSS-safe text for innerHTML
 const safeUrl=u=>/^https?:\/\//i.test(String(u||''))?u:'#';  // block javascript:/data: links
 const AI_DISCLAIMER='⚠️ AI can make mistakes and may misread the data. Educational only — not investment advice. Verify independently.';
+async function aiPost(url,body,targetId,loading){const b=el(targetId);if(!b)return;
+  b.innerHTML=`<div class="spin"></div><p class="muted" style="text-align:center">${loading||'Thinking…'}</p>`;
+  try{const r=await(await fetch(url,body?{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}:{})).json();
+    b.innerHTML=r.text?`<div class="rec" style="white-space:pre-wrap;line-height:1.55">${esc(r.text)}</div><p class="muted">${AI_DISCLAIMER}</p>`:`<p class="muted">${esc(r.note||r.error||'No response.')}</p>`;
+  }catch(e){b.innerHTML='<p class="muted">AI call failed.</p>';}}
 function aiContext(d){return {name:d.name,ticker:d.ticker,sector:d.sector,industry:d.industry,price:d.price,currency:d.currency,
   cap_category:d.cap_category,tags:d.tags,overall_score:d.overall,style:d.style,
   valuation:{verdict:d.valuation.verdict,dcf_verdict:d.valuation.dcf_verdict,margin_of_safety_pct:d.valuation.margin_of_safety_pct,
@@ -2384,13 +2442,17 @@ async function aiScanWatchlist(){const out=el('ai-scan-out');
 async function calibrate(hr){const box=el('caloutput');if(!box)return;if(!hr.length){box.innerHTML='<p class="muted">No calls logged yet — analyze some stocks while signed in.</p>';return;}
   const syms=[...new Set(hr.map(r=>r.ticker))];const q=await(await fetch('/quote?tickers='+encodeURIComponent(syms.join(',')))).json();
   let wins=0,scored=0,t='<table><tr><th>Date</th><th>Ticker</th><th>Verdict</th><th>Score</th><th>Price then</th><th>Now</th><th>Return</th></tr>';
+  const journal=[];
   hr.forEach(r=>{const now=q[r.ticker]?q[r.ticker].price:null;const ret=(now&&r.price)?(now/r.price-1)*100:null;
     const good=(ret!=null)&&((/Buy|Under/i.test(r.verdict||'')&&ret>0)||(/Avoid|Over/i.test(r.verdict||'')&&ret<0));
     if(ret!=null&&/Buy|Avoid|Under|Over/i.test(r.verdict||'')){scored++;if(good)wins++;}
     const rc=ret==null?'':ret>=0?'pos':'neg';
+    journal.push({date:(r.at||'').slice(0,10),ticker:r.ticker.replace('.NS',''),verdict:r.verdict,score:r.score,return_since_pct:ret==null?null:Math.round(ret*10)/10});
     t+=`<tr><td>${(r.at||'').slice(0,10)}</td><td>${r.ticker.replace('.NS','')}</td><td>${r.verdict||'—'}</td><td>${r.score??'—'}</td><td>${fmt(r.price)}</td><td>${now==null?'—':fmt(now)}</td><td class="${rc}">${ret==null?'—':(ret>=0?'+':'')+ret.toFixed(1)+'%'}</td></tr>`;});
   const hit=scored?Math.round(wins/scored*100):null;
-  box.innerHTML=(hit!=null?`<div class="rec">🎯 Directional hit-rate so far: <b>${hit}%</b> on ${scored} scored calls. ${hit>=60?'Your calls are adding value — keep the discipline.':hit>=45?'Roughly coin-flip — tighten your criteria.':'Below 50% — review what your "Buy" calls have in common.'}</div>`:'')+t+'</table>';}
+  box.innerHTML=(hit!=null?`<div class="rec">🎯 Directional hit-rate so far: <b>${hit}%</b> on ${scored} scored calls. ${hit>=60?'Your calls are adding value — keep the discipline.':hit>=45?'Roughly coin-flip — tighten your criteria.':'Below 50% — review what your "Buy" calls have in common.'}</div>`:'')+t+'</table>'
+    +(window.AI_ON?`<button class="dl" id="ai-coach" style="margin-top:10px">🧠 AI coach my decisions</button><div id="ai-coach-out" style="margin-top:8px"></div>`:'');
+  if(window.AI_ON&&el('ai-coach'))el('ai-coach').onclick=()=>aiPost('/ai_analyst',{mode:'coach',context:{hit_rate_pct:hit,scored_calls:scored,journal:journal.slice(0,40)}},'ai-coach-out','Reviewing your calls…');}
 
 fetch('/universe').then(r=>r.json()).then(u=>{UNI=u.universe;MOD=u.models;
   el('ex-country').innerHTML=Object.keys(UNI).map(c=>`<option>${c}</option>`).join('');fillSectors();});
@@ -2527,8 +2589,12 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
   // 🧠 AI analyst — separate, collapsible dropdown so your manual analysis stands alone
   out.append($(`<section class="glass"><details><summary style="font-size:18px;font-weight:600;cursor:pointer">🧠 AI analyst — opinion <span class="muted" style="font-weight:400">(optional · click to expand)</span></summary>
     <div style="margin-top:10px">
-    ${window.AI_ON?`<p class="muted">Persona: CFA + CMT, PhD (math/stats), BlackRock-tier PM — reasoning over the computed numbers above (it won't invent figures). ${AI_DISCLAIMER}</p>
-      <button class="dl" id="ai-go">🧠 Get the AI decision</button>
+    ${window.AI_ON?`<p class="muted">Reasons over the computed numbers above — it won't invent figures. ${AI_DISCLAIMER}</p>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        <button class="dl" id="ai-go" style="margin:0">🧠 Decision</button>
+        <button class="dl" id="ai-bear" style="margin:0">🐻 Bear case</button>
+        <button class="dl" id="ai-news" style="margin:0">📰 News digest</button>
+        <button class="dl" id="ai-best" style="margin:0">🏆 Best in sector</button></div>
       <div id="ai-out" style="margin-top:10px"></div>
       <div class="ac" style="max-width:560px;margin-top:10px"><label>Ask a finance follow-up about this stock</label>
         <div style="display:flex;gap:8px"><input id="ai-q" placeholder='e.g. "is the debt a worry?", "value it for a 5-year hold"'><button class="dl" id="ai-ask" style="margin:0">Ask</button></div></div>
@@ -2540,15 +2606,15 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
       <div id="ai-cmp-out" style="margin-top:8px"></div>`
     :`<p class="muted">The AI analyst is <b>off</b> on this deployment. It thinks like a CFA·CMT·PhD·BlackRock PM over the real metrics/valuation/technicals this tool computes. To switch it on (your choice of provider, incl. a <b>free</b> one):<br>
       • <b>Free</b>: a Groq key → set <code>AI_BASE_URL=https://api.groq.com/openai/v1</code>, <code>AI_API_KEY=…</code>, <code>AI_MODEL=llama-3.3-70b-versatile</code><br>
-      • <b>Claude</b>: set <code>ANTHROPIC_API_KEY=…</code> (optionally <code>AI_MODEL=claude-haiku-4-5</code>)<br>
+      • <b>Claude</b>: set <code>ANTHROPIC_API_KEY=…</code> (optionally <code>AI_MODEL=claude-3-5-haiku-latest</code>)<br>
       Add these as Render env vars (see README) — everything else keeps working without it.</p>`}
     </div></details></section>`));
   if(window.AI_ON){
     const ctx=aiContext(d);
-    el('ai-go').onclick=async()=>{const o2=el('ai-out');o2.innerHTML='<div class="spin"></div><p class="muted" style="text-align:center">Thinking…</p>';
-      try{const r=await(await fetch('/ai_analyst',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({context:ctx})})).json();
-        o2.innerHTML=r.text?`<div class="rec" style="white-space:pre-wrap;line-height:1.55">${esc(r.text)}</div><p class="muted">${AI_DISCLAIMER}</p>`:`<p class="muted">${esc(r.note||'No response.')}</p>`;
-      }catch(e){o2.innerHTML='<p class="muted">AI call failed.</p>';}};
+    el('ai-go').onclick=()=>aiPost('/ai_analyst',{mode:'stock',context:ctx},'ai-out','Thinking…');
+    el('ai-bear').onclick=()=>aiPost('/ai_analyst',{mode:'bear',context:ctx},'ai-out','Building the bear case…');
+    el('ai-news').onclick=()=>aiPost('/ai_analyst',{mode:'news',context:ctx},'ai-out','Reading the news…');
+    el('ai-best').onclick=()=>aiPost(`/ai_sector_pick?ticker=${encodeURIComponent(d.ticker)}&sector=${encodeURIComponent(d.sector||'')}`,null,'ai-out','Evaluating sector peers…');
     el('ai-ask').onclick=async()=>{const q=el('ai-q').value.trim();if(!q)return;const cc=el('ai-chat');
       cc.innerHTML='<div class="flag" style="background:rgba(110,168,254,.1)"><b>You:</b> '+esc(q)+'</div><div class="spin"></div>';
       try{const r=await(await fetch('/ai_chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({q,context:ctx})})).json();
@@ -2966,7 +3032,10 @@ function renderOptimize(d){const m=d.mpt,r=d.risk,bm=d.benchmarks,o=el('t-opt-ou
     <div class="chip">Sector concentration<b>${r.sector_concentration_pct}%</b>${hint(bm.sector_concentration)}</div></div>
     <h3>Per-stock risk</h3><table><tr><th>Stock</th><th>Weight</th><th>Beta</th><th>Volatility</th><th>Downside dev</th><th>Max DD</th><th>Exp ret</th></tr>
     ${d.per_stock.map(s=>`<tr><td>${s.sym.replace('.NS','')}</td><td>${s.weight_pct}%</td><td>${s.beta??'—'}</td><td>${s.vol_pct}%</td><td>${s.downside_dev_pct??'—'}%</td><td>${s.max_drawdown_pct}%</td><td>${s.exp_return_pct}%</td></tr>`).join('')}</table>
-    <h3>Sector concentration</h3>${r.top_sectors.map(s=>`<div class="kv">${s.sector}: <b>${s.pct}%</b></div>`).join('')}</section>`));
+    <h3>Sector concentration</h3>${r.top_sectors.map(s=>`<div class="kv">${s.sector}: <b>${s.pct}%</b></div>`).join('')}
+    ${window.AI_ON?`<hr style="border:0;border-top:1px solid var(--line);margin:12px 0"><button class="dl" id="ai-risk" style="margin:0">🧠 AI risk briefing (plain English)</button><div id="ai-risk-out" style="margin-top:8px"></div>`:''}</section>`));
+  if(window.AI_ON&&el('ai-risk')){const rctx={mpt:d.mpt,risk:d.risk,factor_tilt:d.factor_tilt,value:d.value,monte_carlo:d.monte_carlo};
+    el('ai-risk').onclick=()=>aiPost('/ai_analyst',{mode:'risk',context:rctx},'ai-risk-out','Briefing the risk…');}
   // backtest vs benchmark
   o.append($(`<section class="glass"><h2>📈 Backtest — portfolio vs ${r.benchmark_name} <span class="muted">(growth of ₹1, 2y)</span></h2>
     <canvas id="cBT" height="130"></canvas><p class="muted">Benchmark annual return ${r.benchmark_return_pct}%. Past performance ≠ future results.</p></section>`));
