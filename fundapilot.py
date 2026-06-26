@@ -959,11 +959,19 @@ def fred_latest():
 
 
 # ---------------------------- AI analyst (reasons over the REAL computed data) ----------------------------
-AI_SYSTEM = ("You are a buy-side equity analyst and portfolio manager with CFA and CMT training. "
-             "Reason like a disciplined, skeptical PM. Use ONLY the structured analysis data provided plus "
-             "well-established general knowledge — NEVER invent specific numbers, prices or events that aren't given. "
-             "If the data is thin or conflicting, say so. Be decisive but honest about confidence. This is educational, "
-             "not investment advice. Keep answers tight and concrete.")
+AI_SYSTEM = (
+    "You are FundaPilot's AI analyst. Persona: a CFA and CMT charterholder, a PhD in mathematics & statistics, "
+    "and a senior portfolio manager at a BlackRock-tier asset manager. Apply rigorous methods: for valuation use "
+    "DCF/reverse-DCF and relative multiples (P/E, EV/EBITDA, PEG, P/B, FCF yield) and growth-adjusted fair value; "
+    "for portfolios use Modern Portfolio Theory and risk analytics (Sharpe, VaR, drawdown, beta, correlation, "
+    "diversification) to value and rebalance; for timing use CMT technicals (trend, RSI/MACD, relative strength). "
+    "STRICT RULES: (1) Use ONLY the structured data provided plus well-established general knowledge — NEVER invent "
+    "specific numbers, prices, dividends or events not in the data; if a figure is missing, say so rather than guess. "
+    "(2) Be precise and show brief, quantitative reasoning. (3) Stay STRICTLY within investment/finance analysis of "
+    "the stock(s)/portfolio in the provided context — if asked anything off-topic (politics, coding, personal, general "
+    "chit-chat), decline in one line and steer back to the analysis. (4) This is EDUCATIONAL ONLY, not investment "
+    "advice; acknowledge uncertainty and that you can be wrong. Be decisive but honest about confidence. Keep it tight.")
+AI_DISCLAIMER = "⚠️ AI can make mistakes and may misread the data. Educational use only — not investment advice. Verify independently."
 
 
 def ai_available():
@@ -1831,6 +1839,35 @@ def ai_chat_route():
         return jresp({"error": "AI request failed — check provider settings."}, 502)
 
 
+@app.route("/ai_compare")
+def ai_compare():
+    if not ai_available():
+        return jresp({"error": "AI not configured."}, 400)
+    ip = (request.headers.get("X-Forwarded-For", request.remote_addr or "?")).split(",")[0].strip()
+    ok, why = ai_rate_ok(ip)
+    if not ok:
+        return jresp({"error": why}, 429)
+    a, b = clean_ticker(request.args.get("a")), clean_ticker(request.args.get("b"))
+    if not a or not b:
+        return jresp({"error": "Need two tickers."}, 400)
+
+    def compact(e):
+        keep = ["sym", "name", "sector", "price", "health", "verdict", "fund_score", "tech_score", "pe", "pb",
+                "roe_pct", "roce_pct", "ev_ebitda", "net_margin_pct", "earnings_growth_pct", "earnings_cagr_3y",
+                "de", "rsi", "above_200dma", "rel_strength_6m", "fund_note"]
+        return {k: e.get(k) for k in keep if k in e}
+    try:
+        ea, eb = evaluate_holding(a, 0, "medium", None), evaluate_holding(b, 0, "medium", None)
+        ctx = json.dumps({"A": compact(ea), "B": compact(eb)})[:6500]
+        user = ("Compare these two stocks as a PM and pick the better BUY right now.\n\nDATA:\n" + ctx +
+                "\n\nRespond (plain text):\nWINNER: A or B (ticker) — one line why\nVALUATION EDGE: which is cheaper for its quality/growth\n"
+                "QUALITY & RISK EDGE: which is the better business / lower risk\nTECHNICAL EDGE: which has the better trend now\n"
+                "VERDICT: a 2-line call, noting for whom (value vs growth vs safety). Use only the data; don't invent numbers.")
+        return jresp({"text": ai_chat(AI_SYSTEM, user)})
+    except Exception:
+        return jresp({"error": "AI compare failed — check provider settings."}, 502)
+
+
 @app.route("/universe")
 def universe():
     return jresp({"universe": UNIVERSE, "models": MODELS})
@@ -2233,6 +2270,7 @@ const el=id=>document.getElementById(id), out=el('out');
 const fmt=n=>n==null?'—':(Math.abs(n)>=1e7?(n/1e7).toFixed(2)+' Cr':Math.abs(n)>=1e5?(n/1e5).toFixed(2)+' L':Number(n).toLocaleString(undefined,{maximumFractionDigits:2}));
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));  // XSS-safe text for innerHTML
 const safeUrl=u=>/^https?:\/\//i.test(String(u||''))?u:'#';  // block javascript:/data: links
+const AI_DISCLAIMER='⚠️ AI can make mistakes and may misread the data. Educational only — not investment advice. Verify independently.';
 function aiContext(d){return {name:d.name,ticker:d.ticker,sector:d.sector,industry:d.industry,price:d.price,currency:d.currency,
   cap_category:d.cap_category,tags:d.tags,overall_score:d.overall,style:d.style,
   valuation:{verdict:d.valuation.verdict,dcf_verdict:d.valuation.dcf_verdict,margin_of_safety_pct:d.valuation.margin_of_safety_pct,
@@ -2333,7 +2371,7 @@ async function aiScanWatchlist(){const out=el('ai-scan-out');
     if(ev.error){out.innerHTML=`<p class="muted">${esc(ev.error)}</p>`;return;}
     const ctx={list:activeList,candidates:(ev.holdings||[]).map(e=>({sym:e.sym,health:e.health,verdict:e.verdict,fund:e.fund_score,tech:e.tech_score,pe:e.pe,roe:e.roe_pct,roce:e.roce_pct,cagr:e.earnings_cagr_3y,rsi:e.rsi,above_200dma:e.above_200dma,rel_strength_6m:e.rel_strength_6m}))};
     const r=await(await fetch('/ai_analyst',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode:'scan',context:ctx})})).json();
-    out.innerHTML=r.text?`<div class="rec" style="white-space:pre-wrap;line-height:1.55">${esc(r.text)}</div>`:`<p class="muted">${esc(r.note||'No response.')}</p>`;
+    out.innerHTML=r.text?`<div class="rec" style="white-space:pre-wrap;line-height:1.55">${esc(r.text)}</div><p class="muted">${AI_DISCLAIMER}</p>`:`<p class="muted">${esc(r.note||'No response.')}</p>`;
   }catch(e){out.innerHTML='<p class="muted">Scan failed.</p>';}}
 async function calibrate(hr){const box=el('caloutput');if(!box)return;if(!hr.length){box.innerHTML='<p class="muted">No calls logged yet — analyze some stocks while signed in.</p>';return;}
   const syms=[...new Set(hr.map(r=>r.ticker))];const q=await(await fetch('/quote?tickers='+encodeURIComponent(syms.join(',')))).json();
@@ -2478,29 +2516,42 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
     <div><h3>Risks</h3>${(rv.risks||[]).length?rv.risks.map(x=>`<div class="flag f-bad">${x}</div>`).join(''):'<div class="muted">None detected.</div>'}</div></div>
     <div style="margin-top:10px">Verdict: <span class="verdict ${vc}">${rv.verdict}</span> <span class="muted">— ${rv.why}</span></div></section>`));
 
-  // 🧠 AI analyst — reasons over the real computed data (on demand)
-  out.append($(`<section class="glass"><h2>🧠 AI analyst <span class="muted">— reasons over the numbers above</span></h2>
-    ${window.AI_ON?`<button class="dl" id="ai-go">🧠 Ask the AI analyst for a decision</button>
-      <span class="muted"> grounded in this stock's computed analysis (no made-up numbers)</span>
+  // 🧠 AI analyst — separate, collapsible dropdown so your manual analysis stands alone
+  out.append($(`<section class="glass"><details><summary style="font-size:18px;font-weight:600;cursor:pointer">🧠 AI analyst — opinion <span class="muted" style="font-weight:400">(optional · click to expand)</span></summary>
+    <div style="margin-top:10px">
+    ${window.AI_ON?`<p class="muted">Persona: CFA + CMT, PhD (math/stats), BlackRock-tier PM — reasoning over the computed numbers above (it won't invent figures). ${AI_DISCLAIMER}</p>
+      <button class="dl" id="ai-go">🧠 Get the AI decision</button>
       <div id="ai-out" style="margin-top:10px"></div>
-      <div class="ac" style="max-width:560px;margin-top:10px"><label>Ask a follow-up (e.g. "is the debt a worry?", "compare to a 5-year hold")</label>
-        <div style="display:flex;gap:8px"><input id="ai-q" placeholder="Type a question…"><button class="dl" id="ai-ask" style="margin:0">Ask</button></div></div>
-      <div id="ai-chat" style="margin-top:8px"></div>`
-    :`<p class="muted">The AI analyst is <b>off</b> on this deployment. It thinks over the real metrics/valuation/technicals this tool computes and gives a PM-style decision. To switch it on (your choice of provider, incl. a <b>free</b> one):<br>
+      <div class="ac" style="max-width:560px;margin-top:10px"><label>Ask a finance follow-up about this stock</label>
+        <div style="display:flex;gap:8px"><input id="ai-q" placeholder='e.g. "is the debt a worry?", "value it for a 5-year hold"'><button class="dl" id="ai-ask" style="margin:0">Ask</button></div></div>
+      <div id="ai-chat" style="margin-top:8px"></div>
+      <hr style="border:0;border-top:1px solid var(--line);margin:14px 0">
+      <h3>⚔️ AI compare with another stock</h3>
+      <div class="ac" style="max-width:460px"><input id="ai-cmp" placeholder="Type a 2nd company to compare…" autocomplete="off"><div class="acbox" id="ai-cmpbox"></div></div>
+      <button class="dl" id="ai-cmp-go" style="margin-top:6px">Compare which is the better buy ▸</button>
+      <div id="ai-cmp-out" style="margin-top:8px"></div>`
+    :`<p class="muted">The AI analyst is <b>off</b> on this deployment. It thinks like a CFA·CMT·PhD·BlackRock PM over the real metrics/valuation/technicals this tool computes. To switch it on (your choice of provider, incl. a <b>free</b> one):<br>
       • <b>Free</b>: a Groq key → set <code>AI_BASE_URL=https://api.groq.com/openai/v1</code>, <code>AI_API_KEY=…</code>, <code>AI_MODEL=llama-3.3-70b-versatile</code><br>
       • <b>Claude</b>: set <code>ANTHROPIC_API_KEY=…</code> (optionally <code>AI_MODEL=claude-haiku-4-5</code>)<br>
-      Add these as Render env vars (see README) — everything else keeps working without it.</p>`}</section>`));
+      Add these as Render env vars (see README) — everything else keeps working without it.</p>`}
+    </div></details></section>`));
   if(window.AI_ON){
     const ctx=aiContext(d);
     el('ai-go').onclick=async()=>{const o2=el('ai-out');o2.innerHTML='<div class="spin"></div><p class="muted" style="text-align:center">Thinking…</p>';
       try{const r=await(await fetch('/ai_analyst',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({context:ctx})})).json();
-        o2.innerHTML=r.text?`<div class="rec" style="white-space:pre-wrap;line-height:1.55">${esc(r.text)}</div><p class="muted">AI reasoning over this tool's computed data — verify before acting. Educational only.</p>`:`<p class="muted">${esc(r.note||'No response.')}</p>`;
+        o2.innerHTML=r.text?`<div class="rec" style="white-space:pre-wrap;line-height:1.55">${esc(r.text)}</div><p class="muted">${AI_DISCLAIMER}</p>`:`<p class="muted">${esc(r.note||'No response.')}</p>`;
       }catch(e){o2.innerHTML='<p class="muted">AI call failed.</p>';}};
     el('ai-ask').onclick=async()=>{const q=el('ai-q').value.trim();if(!q)return;const cc=el('ai-chat');
       cc.innerHTML='<div class="flag" style="background:rgba(110,168,254,.1)"><b>You:</b> '+esc(q)+'</div><div class="spin"></div>';
       try{const r=await(await fetch('/ai_chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({q,context:ctx})})).json();
-        cc.innerHTML='<div class="flag" style="background:rgba(110,168,254,.1)"><b>You:</b> '+esc(q)+'</div>'+(r.text?`<div class="flag f-good" style="white-space:pre-wrap">🧠 ${esc(r.text)}</div>`:`<div class="muted">${esc(r.error||'No answer.')}</div>`);
+        cc.innerHTML='<div class="flag" style="background:rgba(110,168,254,.1)"><b>You:</b> '+esc(q)+'</div>'+(r.text?`<div class="flag f-good" style="white-space:pre-wrap">🧠 ${esc(r.text)}</div><p class="muted">${AI_DISCLAIMER}</p>`:`<div class="muted">${esc(r.error||'No answer.')}</div>`);
       }catch(e){cc.innerHTML='<p class="muted">AI call failed.</p>';}};
+    let cmpB=null;acWire('ai-cmp','ai-cmpbox',sym=>{cmpB=sym;el('ai-cmp').value=sym.replace('.NS','').replace('.BO','');});
+    el('ai-cmp-go').onclick=async()=>{const b=cmpB||el('ai-cmp').value.trim().toUpperCase();if(!b){alert('Pick a second company.');return;}
+      const o3=el('ai-cmp-out');o3.innerHTML='<div class="spin"></div><p class="muted" style="text-align:center">Evaluating both & comparing…</p>';
+      try{const r=await(await fetch(`/ai_compare?a=${encodeURIComponent(d.ticker)}&b=${encodeURIComponent(b)}`)).json();
+        o3.innerHTML=r.text?`<div class="rec" style="white-space:pre-wrap;line-height:1.55">${esc(r.text)}</div><p class="muted">${AI_DISCLAIMER}</p>`:`<p class="muted">${esc(r.error||'No response.')}</p>`;
+      }catch(e){o3.innerHTML='<p class="muted">Compare failed.</p>';}};
   }
 
   // institutional quality & solvency highlight
@@ -2555,12 +2606,19 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
     <p class="muted" style="margin-top:8px">FCF used ${money(cur,val.fcf,null)} (${val.fcf_source||'n/a'}). A high P/E isn't automatically "overvalued" — if growth, quality and the global industry support it, paying up can be justified.</p></section>`));
   loadIndustryPE(d.ticker,d.sector);
 
-  let rt='<section class="glass"><h2>Ratio analysis <span class="muted">— hover a metric for what it is & how to use it</span></h2><table><tr><th>Metric</th><th>Value</th><th style="text-align:left">What it means · benchmark</th></tr>';
+  let rt='<section class="glass"><h2>Ratio analysis <span class="muted">— hover for the definition'+(window.AI_ON?'; click 🧠 for an AI explanation for THIS company':'')+'</span></h2><table><tr><th>Metric</th><th>Value</th><th style="text-align:left">What it means · benchmark</th></tr>';
   for(const[k,o]of Object.entries(d.ratios)){const u=o.unit||'';
     const disp=o.value==null?'—':(o.inr!==undefined?money(cur,o.value,o.inr):(u==='%'?o.value+'%':u==='x'?o.value+'x':o.value));
     const meaning=o.text?`<span class="dot d-${o.rating}"></span>${o.text}${o.bench?' <span class="muted">('+o.bench+')</span>':''}`:'<span class="muted">—</span>';
-    rt+=`<tr><td>${tip(k)}</td><td>${disp}</td><td style="text-align:left;font-size:12px">${meaning}</td></tr>`;}
-  out.append($(rt+'</table><p class="muted">🟢 good · 🟡 ok · 🔴 watch. Benchmarks are general rules of thumb; compare within the same sector.</p></section>'));
+    const aiex=window.AI_ON?` <a href="#" class="aiex" data-m="${esc(k)}" data-v="${o.value==null?'':o.value}" title="AI explain for this company" style="text-decoration:none">🧠</a>`:'';
+    rt+=`<tr><td>${tip(k)}${aiex}</td><td>${disp}</td><td style="text-align:left;font-size:12px">${meaning}</td></tr>`;}
+  out.append($(rt+'</table><div id="aiex-out"></div><p class="muted">🟢 good · 🟡 ok · 🔴 watch. Benchmarks are general rules of thumb; compare within the same sector.</p></section>'));
+  if(window.AI_ON){const ctx2=aiContext(d);document.querySelectorAll('.aiex').forEach(a=>a.onclick=async e=>{e.preventDefault();
+    const m=a.dataset.m,v=a.dataset.v,box=el('aiex-out');box.innerHTML=`<div class="flag" style="background:rgba(110,168,254,.1)"><div class="spin" style="margin:6px auto"></div><div class="muted" style="text-align:center">AI explaining ${esc(m)}…</div></div>`;
+    try{const r=await(await fetch('/ai_chat',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({q:`Explain the metric "${m}" (value: ${v||'n/a'}) specifically for ${d.name}: what it measures, whether this level is good/bad for THIS company and sector, and what it implies — 3-4 sentences.`,context:ctx2})})).json();
+      box.innerHTML=r.text?`<div class="flag f-good" style="white-space:pre-wrap"><b>🧠 ${esc(m)}:</b> ${esc(r.text)}</div><p class="muted">${AI_DISCLAIMER}</p>`:`<p class="muted">${esc(r.error||'No answer.')}</p>`;
+    }catch(err){box.innerHTML='<p class="muted">AI call failed.</p>';}});}
 
   out.append($(`<section class="glass"><h2>Technical analysis</h2><div class="grid two">${tf('Daily',d.technical.daily)}${tf('Weekly',d.technical.weekly)}</div>
     <p class="muted">Benchmarks — RSI(14): below 30 = oversold 🟢, 30–70 = neutral, above 70 = overbought 🔴. EMA200: price above = long-term uptrend; below = downtrend.</p>
@@ -2809,7 +2867,7 @@ function renderEval(d){const o=el('t-eval-out');o.innerHTML='';
       blended_cagr:d.portfolio_earnings_cagr};
     el('ai-pf').onclick=async()=>{const b=el('ai-pf-out');b.innerHTML='<div class="spin"></div><p class="muted" style="text-align:center">Thinking…</p>';
       try{const r=await(await fetch('/ai_analyst',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode:'portfolio',context:pctx})})).json();
-        b.innerHTML=r.text?`<div class="rec" style="white-space:pre-wrap;line-height:1.55">${esc(r.text)}</div><p class="muted">AI reasoning over your evaluated portfolio — verify before acting.</p>`:`<p class="muted">${esc(r.note||'No response.')}</p>`;
+        b.innerHTML=r.text?`<div class="rec" style="white-space:pre-wrap;line-height:1.55">${esc(r.text)}</div><p class="muted">${AI_DISCLAIMER}</p>`:`<p class="muted">${esc(r.note||'No response.')}</p>`;
       }catch(e){b.innerHTML='<p class="muted">AI call failed.</p>';}};
   }
   // how to rebalance — explicit steps + the situational plan
