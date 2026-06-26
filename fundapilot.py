@@ -1810,6 +1810,19 @@ def ai_analyst():
     d = request.get_json(force=True) or {}
     mode = d.get("mode", "stock")
     ctx = json.dumps(d.get("context") or {})[:6500]
+    lessons = (d.get("memory") or {}).get("lessons") or []
+    mem_txt = ("YOUR HARD-WON LESSONS from your past calls — APPLY these and do NOT repeat these mistakes:\n- "
+               + "\n- ".join(str(x)[:280] for x in lessons[:12]) + "\n\n") if lessons else ""
+    if mode == "lessons":
+        user = ("Review your PAST CALLS and their actual outcomes below, then distill DURABLE LESSONS so you decide "
+                "better next time.\n\nTRACK RECORD (verdict, score, and return since the call):\n" + ctx +
+                "\n\nReturn 3–6 SHORT, SPECIFIC, ACTIONABLE lessons — one per line, each starting with '- ' — about what to do "
+                "differently (e.g. position sizing, over-weighting momentum, ignoring debt, selling winners early). If the "
+                "record is thin, say what to track more. No preamble, just the lessons.")
+        try:
+            return jresp({"enabled": True, "text": ai_chat(AI_SYSTEM, user, 600)})
+        except Exception as e:
+            return jresp({"enabled": False, "note": "AI request failed — " + str(e)[:300]}, 502)
     if mode == "portfolio":
         user = ("Act as my PM and review this WHOLE PORTFOLIO from the evaluation below.\n\nDATA:\n" + ctx +
                 "\n\nRespond (plain text, concise):\nOVERALL STANCE: 1–2 sentences\nTOP 3 ACTIONS: prioritized bullets (sell/trim/add/average/diversify) with why\n"
@@ -1840,6 +1853,8 @@ def ai_analyst():
                 "\n\nRespond (plain text, concise):\nDECISION: Buy / Accumulate / Hold / Reduce / Avoid\nTHESIS: 2–3 sentences\n"
                 "KEY RISKS: 3 bullets\nWHAT WOULD CHANGE MY MIND: 1–2 bullets\nCONFIDENCE: low/medium/high + one line. "
                 "Base only on the data above + general knowledge; don't invent numbers.")
+    if mode in ("stock", "bear", "portfolio", "scan") and mem_txt:
+        user = mem_txt + user   # feed the AI its own lessons so it learns from past mistakes
     try:
         return jresp({"enabled": True, "text": ai_chat(AI_SYSTEM, user)})
     except Exception as e:
@@ -2357,13 +2372,16 @@ function setMode(m){mode=m;document.querySelectorAll('.tab').forEach(x=>x.classL
 document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>setMode(t.dataset.tab));
 
 // ---------- Supabase auth + per-user data (graceful: app works fully without it) ----------
-let SB=null, USER=null;
+let SB=null, USER=null, AI_LESSONS=[];
 if(window.SB_URL&&window.SB_KEY&&window.supabase){
   SB=window.supabase.createClient(window.SB_URL,window.SB_KEY);
-  SB.auth.getSession().then(({data})=>{USER=data.session?data.session.user:null;paintAuth();});
-  SB.auth.onAuthStateChange((_e,s)=>{USER=s?s.user:null;paintAuth();});
+  SB.auth.getSession().then(({data})=>{USER=data.session?data.session.user:null;paintAuth();loadLessons();});
+  SB.auth.onAuthStateChange((_e,s)=>{USER=s?s.user:null;paintAuth();loadLessons();});
 }
 paintAuth();
+async function loadLessons(){if(!SB||!USER){AI_LESSONS=[];return;}
+  try{const r=await SB.from('ai_lessons').select('content').order('at',{ascending:false}).limit(20);AI_LESSONS=(r.data||[]).map(x=>x.content);}catch(e){AI_LESSONS=[];}}
+function aiMemory(){return AI_LESSONS.length?{lessons:AI_LESSONS}:undefined;}  // feed past lessons into new AI calls
 function paintAuth(){const bar=el('authbar');if(!bar)return;
   if(!SB){bar.innerHTML='';return;}
   el('metab').style.display='block';
@@ -2450,9 +2468,22 @@ async function calibrate(hr){const box=el('caloutput');if(!box)return;if(!hr.len
     journal.push({date:(r.at||'').slice(0,10),ticker:r.ticker.replace('.NS',''),verdict:r.verdict,score:r.score,return_since_pct:ret==null?null:Math.round(ret*10)/10});
     t+=`<tr><td>${(r.at||'').slice(0,10)}</td><td>${r.ticker.replace('.NS','')}</td><td>${r.verdict||'—'}</td><td>${r.score??'—'}</td><td>${fmt(r.price)}</td><td>${now==null?'—':fmt(now)}</td><td class="${rc}">${ret==null?'—':(ret>=0?'+':'')+ret.toFixed(1)+'%'}</td></tr>`;});
   const hit=scored?Math.round(wins/scored*100):null;
-  box.innerHTML=(hit!=null?`<div class="rec">🎯 Directional hit-rate so far: <b>${hit}%</b> on ${scored} scored calls. ${hit>=60?'Your calls are adding value — keep the discipline.':hit>=45?'Roughly coin-flip — tighten your criteria.':'Below 50% — review what your "Buy" calls have in common.'}</div>`:'')+t+'</table>'
-    +(window.AI_ON?`<button class="dl" id="ai-coach" style="margin-top:10px">🧠 AI coach my decisions</button><div id="ai-coach-out" style="margin-top:8px"></div>`:'');
-  if(window.AI_ON&&el('ai-coach'))el('ai-coach').onclick=()=>aiPost('/ai_analyst',{mode:'coach',context:{hit_rate_pct:hit,scored_calls:scored,journal:journal.slice(0,40)}},'ai-coach-out','Reviewing your calls…');}
+  const lessonsHtml=window.AI_ON?`<hr style="border:0;border-top:1px solid var(--line);margin:14px 0">
+    <h3>🧠 AI memory — lessons it has learned <span class="muted">(fed into every future AI decision)</span></h3>
+    <div id="ai-lessons">${AI_LESSONS.length?AI_LESSONS.map(l=>`<div class="flag f-good">• ${esc(l)}</div>`).join(''):'<p class="muted">No lessons yet — click below to have the AI review your track record and learn from it.</p>'}</div>
+    <button class="dl" id="ai-coach" style="margin-top:8px">🧠 Coach me (advice)</button>
+    <button class="dl" id="ai-learn" style="margin-top:8px">📚 Self-review &amp; learn lessons</button>
+    <div id="ai-coach-out" style="margin-top:8px"></div>`:'';
+  box.innerHTML=(hit!=null?`<div class="rec">🎯 Directional hit-rate so far: <b>${hit}%</b> on ${scored} scored calls. ${hit>=60?'Your calls are adding value — keep the discipline.':hit>=45?'Roughly coin-flip — tighten your criteria.':'Below 50% — review what your "Buy" calls have in common.'}</div>`:'')+t+'</table>'+lessonsHtml;
+  if(window.AI_ON&&el('ai-coach'))el('ai-coach').onclick=()=>aiPost('/ai_analyst',{mode:'coach',context:{hit_rate_pct:hit,scored_calls:scored,journal:journal.slice(0,40)}},'ai-coach-out','Reviewing your calls…');
+  if(window.AI_ON&&el('ai-learn'))el('ai-learn').onclick=async()=>{const b=el('ai-coach-out');b.innerHTML='<div class="spin"></div><p class="muted" style="text-align:center">Reviewing outcomes & distilling lessons…</p>';
+    try{const r=await(await fetch('/ai_analyst',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode:'lessons',context:{hit_rate_pct:hit,journal:journal.slice(0,40)}})})).json();
+      if(!r.text){b.innerHTML=`<p class="muted">${esc(r.note||r.error||'No lessons.')}</p>`;return;}
+      const newLessons=r.text.split('\n').map(s=>s.replace(/^[-•*\\d.\\s]+/,'').trim()).filter(s=>s.length>8);
+      if(newLessons.length&&SB&&USER){try{await SB.from('ai_lessons').insert(newLessons.map(c=>({user_id:USER.id,content:c.slice(0,400)})));await loadLessons();}catch(e){b.innerHTML='<p class="muted">Lessons generated but could not be saved — run the ai_lessons migration in the README. '+esc(e.message||'')+'</p>';return;}}
+      b.innerHTML=`<div class="rec" style="white-space:pre-wrap">📚 New lessons saved — they'll now inform every future AI decision:\n${esc(newLessons.map(l=>'• '+l).join('\n'))}</div><p class="muted">${AI_DISCLAIMER}</p>`;
+      renderMe();
+    }catch(e){b.innerHTML='<p class="muted">Self-review failed.</p>';}};}
 
 fetch('/universe').then(r=>r.json()).then(u=>{UNI=u.universe;MOD=u.models;
   el('ex-country').innerHTML=Object.keys(UNI).map(c=>`<option>${c}</option>`).join('');fillSectors();});
@@ -2611,8 +2642,8 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
     </div></details></section>`));
   if(window.AI_ON){
     const ctx=aiContext(d);
-    el('ai-go').onclick=()=>aiPost('/ai_analyst',{mode:'stock',context:ctx},'ai-out','Thinking…');
-    el('ai-bear').onclick=()=>aiPost('/ai_analyst',{mode:'bear',context:ctx},'ai-out','Building the bear case…');
+    el('ai-go').onclick=()=>aiPost('/ai_analyst',{mode:'stock',context:ctx,memory:aiMemory()},'ai-out','Thinking…');
+    el('ai-bear').onclick=()=>aiPost('/ai_analyst',{mode:'bear',context:ctx,memory:aiMemory()},'ai-out','Building the bear case…');
     el('ai-news').onclick=()=>aiPost('/ai_analyst',{mode:'news',context:ctx},'ai-out','Reading the news…');
     el('ai-best').onclick=()=>aiPost(`/ai_sector_pick?ticker=${encodeURIComponent(d.ticker)}&sector=${encodeURIComponent(d.sector||'')}`,null,'ai-out','Evaluating sector peers…');
     el('ai-ask').onclick=async()=>{const q=el('ai-q').value.trim();if(!q)return;const cc=el('ai-chat');
