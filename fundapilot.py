@@ -3083,12 +3083,18 @@ function renderTracker(){const p=loadPort();
     dl('my_portfolio.csv',rows);};
   clearInterval(trackTimer);if(p.length){refreshPort();loadPortNews();trackTimer=setInterval(refreshPort,60000);}}
 
-async function evalPort(){const p=loadPort();if(p.length<1){el('t-eval-out').innerHTML='<section class="glass">Add holdings first.</section>';return;}
-  el('t-eval-out').innerHTML='<div class="spin"></div><p class="muted" style="text-align:center">Evaluating each holding (fundamentals + technicals) — this takes ~20–40s.</p>';
-  const d=await(await fetch('/portfolio_eval',{method:'POST',headers:{'content-type':'application/json'},
-    body:JSON.stringify({holdings:p,horizon:el('t-hz').value,extra_capital:+el('t-extra').value||0})})).json();
-  if(d.error){el('t-eval-out').innerHTML=`<section class="glass">❌ ${d.error}</section>`;return;}
-  renderEval(d);}
+async function evalPort(){const p=loadPort();if(p.length<1){el('t-eval-out').innerHTML='<section class="glass">Add holdings first.</section>';el('t-eval-out').scrollIntoView({behavior:'smooth',block:'start'});return;}
+  el('t-opt-out').innerHTML='';  // switch cleanly between views
+  el('t-eval-out').innerHTML='<section class="glass"><div class="spin"></div><p class="muted" style="text-align:center">Evaluating each holding (fundamentals + technicals) — this takes ~20–40s.</p></section>';
+  el('t-eval-out').scrollIntoView({behavior:'smooth',block:'start'});
+  try{
+    const res=await fetch('/portfolio_eval',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({holdings:p,horizon:el('t-hz').value,extra_capital:+el('t-extra').value||0})});
+    if(!res.ok){el('t-eval-out').innerHTML=`<section class="glass">Server returned ${res.status}. The free tier may be waking up or busy — wait a few seconds and click again.</section>`;return;}
+    const d=await res.json();
+    if(d.error){el('t-eval-out').innerHTML=`<section class="glass">${esc(d.error)}</section>`;return;}
+    renderEval(d);
+  }catch(e){el('t-eval-out').innerHTML='<section class="glass">Could not reach the server (it may be waking from sleep, ~30–60s). Try again.</section>';}}
 function vcl(v){return (v==='Accumulate')?'pos':(v==='Exit'||v==='Reduce')?'neg':'';}
 function renderEval(d){const o=el('t-eval-out');o.innerHTML='';
   const oc=d.overall_health>=6.5?'v-under':d.overall_health>=5?'v-fair':'v-over';
@@ -3164,12 +3170,18 @@ function renderEval(d){const o=el('t-eval-out');o.innerHTML='';
       sc+=(news&&news.length)?news.map(n=>`<div class="flag ${n.tone=='neg'?'f-bad':n.tone=='pos'?'f-good':''}"><a href="${safeUrl(n.link)}" target="_blank" rel="noopener noreferrer">${esc(n.title)}</a> <small class="muted">${esc(n.source||"")}${n.source?" · ":""}${n.date}</small></div>`).join(''):'<div class="muted">No recent headlines.</div>';sc+='</div>';}}
   o.append($(sc+'</section>'));}
 
-async function optimizePort(){const p=loadPort();if(p.length<1){el('t-opt-out').innerHTML='<section class="glass">Add holdings first.</section>';return;}
-  el('t-opt-out').innerHTML='<div class="spin"></div>';
-  const d=await(await fetch('/optimize',{method:'POST',headers:{'content-type':'application/json'},
-    body:JSON.stringify({holdings:p,extra_capital:+el('t-extra').value||0})})).json();
-  if(d.error){el('t-opt-out').innerHTML=`<section class="glass">❌ ${d.error}</section>`;return;}
-  renderOptimize(d);}
+async function optimizePort(){const p=loadPort();if(p.length<1){el('t-opt-out').innerHTML='<section class="glass">Add holdings first.</section>';el('t-opt-out').scrollIntoView({behavior:'smooth',block:'start'});return;}
+  el('t-eval-out').innerHTML='';  // switch cleanly between views
+  el('t-opt-out').innerHTML='<section class="glass"><div class="spin"></div><p class="muted" style="text-align:center">Computing quant analytics (Sharpe, VaR, Monte-Carlo…) — ~15–30s.</p></section>';
+  el('t-opt-out').scrollIntoView({behavior:'smooth',block:'start'});
+  try{
+    const res=await fetch('/optimize',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({holdings:p,extra_capital:+el('t-extra').value||0})});
+    if(!res.ok){el('t-opt-out').innerHTML=`<section class="glass">Server returned ${res.status}. The free tier may be waking up or busy — wait a few seconds and click again.</section>`;return;}
+    const d=await res.json();
+    if(d.error){el('t-opt-out').innerHTML=`<section class="glass">${esc(d.error)}</section>`;return;}
+    renderOptimize(d);
+  }catch(e){el('t-opt-out').innerHTML='<section class="glass">Could not reach the server (it may be waking from sleep, ~30–60s). Try again.</section>';}}
 function renderOptimize(d){const m=d.mpt,r=d.risk,bm=d.benchmarks,o=el('t-opt-out');o.innerHTML='';
   const hint=t=>t?`<span class="muted" style="display:block;font-size:11px">${t}</span>`:'';
   // dividend income
