@@ -2326,6 +2326,20 @@ def _selftest():
     assert im["EV/EBITDA"] > 0 and im["ROCE %"] > 0 and im["FCF yield %"] > 0
     assert im["Altman Z"] > 0 and 0 <= im["Piotroski F"] <= im["_piotroski_max"] <= 9
     assert im["Revenue CAGR 3y %"] > 0
+    # validate the inlined browser JS — a single JS syntax error breaks the whole UI.
+    # Uses node if available; skips gracefully otherwise.
+    import shutil, subprocess, tempfile
+    if shutil.which("node"):
+        blocks = re.findall(r"<script>(.*?)</script>", HTML, re.S)
+        js = max(blocks, key=len) if blocks else ""
+        fp = tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8")
+        fp.write(js); fp.close()
+        r = subprocess.run(["node", "--check", fp.name], capture_output=True, text=True)
+        os.remove(fp.name)
+        assert r.returncode == 0, "inline app JS has a syntax error:\n" + (r.stderr[:600])
+        print("inline JS OK")
+    else:
+        print("(node not installed — inline-JS check skipped)")
     print("selftest OK")
 
 
