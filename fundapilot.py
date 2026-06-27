@@ -333,19 +333,34 @@ def derive_fcf(info, t):
     return None, None, {}
 
 
+# reputable business/markets outlets — surfaced first and tagged in the feed
+NEWS_SOURCES = ("reuters", "bloomberg", "cnbc", "moneycontrol", "economic times", "livemint", "mint",
+                "business standard", "financial times", "the hindu businessline", "forbes", "wsj", "wall street journal",
+                "businessworld", "ndtv profit", "zee business", "et now")
+
+
 def google_news(query, n=8):
     try:
-        url = "https://news.google.com/rss/search?q=" + urllib.parse.quote(query) + "+when:14d&hl=en-IN&gl=IN&ceid=IN:en"
+        url = "https://news.google.com/rss/search?q=" + urllib.parse.quote(query) + "+when:21d&hl=en-IN&gl=IN&ceid=IN:en"
         raw = urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=10).read()
         root = ET.fromstring(raw)
-        out = []
-        for it in list(root.iter("item"))[:n]:
+        items = []
+        for it in list(root.iter("item")):
             title = (it.findtext("title") or "").strip()
+            if not title:
+                continue
+            src = (it.findtext("{*}source") or it.findtext("source") or "").strip()
+            # Google often appends " - Source" to the title; recover it if the source tag is empty
+            if not src and " - " in title:
+                src = title.rsplit(" - ", 1)[-1].strip()
+                title = title.rsplit(" - ", 1)[0].strip()
             low = title.lower()
             tone = "neg" if any(w in low for w in NEG) else ("pos" if any(w in low for w in POS) else "neutral")
-            if title:
-                out.append({"title": title, "link": it.findtext("link") or "", "date": (it.findtext("pubDate") or "")[:16], "tone": tone})
-        return out
+            reputable = any(s in (src or "").lower() for s in NEWS_SOURCES)
+            items.append({"title": title, "link": it.findtext("link") or "", "date": (it.findtext("pubDate") or "")[:16],
+                          "tone": tone, "source": src or "—", "reputable": reputable})
+        items.sort(key=lambda x: 0 if x["reputable"] else 1)  # reputable outlets first
+        return items[:n]
     except Exception:
         return []
 
@@ -587,6 +602,38 @@ def enriched_info(sym):
         except Exception:
             pass
     return info
+
+
+def business_model(fin):
+    """Where each ₹100 of revenue goes — cost structure from the income statement (real, computed).
+    NOT product/geography segment revenue (not available in free data)."""
+    L = lambda s: float(s.iloc[0]) if s is not None and len(s) else None
+    rev = L(_srow(fin, "Total Revenue", "Operating Revenue"))
+    if not rev or rev <= 0:
+        return None
+    cogs = L(_srow(fin, "Cost Of Revenue"))
+    opex = L(_srow(fin, "Operating Expense", "Operating Expenses"))
+    if opex is None:
+        sga, rnd = L(_srow(fin, "Selling General And Administration")), L(_srow(fin, "Research And Development"))
+        opex = (sga or 0) + (rnd or 0) if (sga or rnd) else None
+    tax = L(_srow(fin, "Tax Provision", "Income Tax Expense"))
+    interest = L(_srow(fin, "Interest Expense"))
+    net = L(_srow(fin, "Net Income", "Net Income Common Stockholders"))
+    slices, used = [], 0.0
+    for label, val in [("Cost of goods/services", cogs), ("Operating expenses", opex),
+                       ("Interest", interest), ("Tax", tax)]:
+        if val and val > 0:
+            slices.append({"label": label, "pct": round(val / rev * 100, 1)}); used += val
+    if net is not None:
+        slices.append({"label": "Net profit" if net >= 0 else "Net loss", "pct": round(net / rev * 100, 1)}); used += net
+    other = rev - used
+    if other / rev > 0.03:
+        slices.append({"label": "Other / adjustments", "pct": round(other / rev * 100, 1)})
+    if len(slices) < 2:
+        return None
+    return {"revenue": rev, "slices": slices,
+            "net_margin_pct": round(net / rev * 100, 1) if net is not None else None,
+            "note": "How each ₹100 of revenue is split (cost structure from the income statement). Product/geography segment revenue isn't in free data — see the annual report or ask the AI."}
 
 
 def fetch(ticker, years):
@@ -1261,6 +1308,9 @@ def analyze(ticker, horizon, risk, capital, years, style):
             "cap_category": cap_cat, "currency": sym, "currency_code": cur_code, "fx_inr": fx,
             "price": price, "price_inr": (price * fx) if (price and fx) else None,
             "marketCap": mktcap, "marketCap_inr": mktcap_inr, "summary": _g(info, "longBusinessSummary"),
+            "business_model": business_model(fin),
+            "officers": [{"name": o.get("name"), "title": o.get("title"), "age": o.get("age"), "pay": o.get("totalPay")}
+                         for o in (_g(info, "companyOfficers") or [])[:6] if o.get("name")],
             "ratios": ratios, "scores": scores, "overall": overall,
             "style": {"id": style, "label": STYLE_LABEL.get(style, style), "score": style_score, "take": style_take},
             "styles_fit": _styles_fit(roe, de, pe, pb, peg, earn_g, rev_g, fcf, div_y, beta, opm),
@@ -1744,15 +1794,15 @@ def portfolio_eval(holdings, horizon, extra_capital):
         targets = to_add or [e for e in valid if (e["health"] or 0) >= 6]
         if targets:
             per = round(extra_capital / len(targets))
-            plan.append(f"💰 You have ₹{extra_capital:,.0f} to deploy → add ≈₹{per:,} to each of: " +
+            plan.append(f"You have ₹{extra_capital:,.0f} to deploy → add ≈₹{per:,} to each of: " +
                         ", ".join(t["sym"].replace(".NS", "") for t in targets) + ".")
         under = [e for e in valid if e.get("pnl_pct") is not None and e["pnl_pct"] < 0 and e["verdict"] == "Accumulate"]
         if under:
-            plan.append("📉 Average down (thesis intact but price is below your buy): " +
+            plan.append("Average down (thesis intact but price is below your buy): " +
                         ", ".join(f"{e['sym'].replace('.NS','')} ({e['pnl_pct']}%)" for e in under) + ".")
     else:
         if to_trim:
-            plan.append("🔁 No fresh cash → rebalance from within: trim/exit " +
+            plan.append("No fresh cash → rebalance from within: trim/exit " +
                         ", ".join(e["sym"].replace(".NS", "") for e in to_trim) +
                         f" (frees ≈₹{round(freed):,}), then redeploy into " +
                         (", ".join(t["sym"].replace(".NS", "") for t in to_add) or "your strongest holdings") + ".")
@@ -1895,6 +1945,13 @@ def ai_analyst():
         user = ("Act as a coach reviewing this investor's PAST CALLS (analysis journal).\n\nJOURNAL DATA:\n" + ctx +
                 "\n\nRespond (plain text):\nWHAT'S WORKING: patterns in the wins\nWHAT'S NOT: patterns in the misses\n"
                 "3 CONCRETE HABITS TO IMPROVE. Be candid but constructive. Use only the data given; if it's thin, say what to log more of.")
+    elif mode == "mda":
+        user = ("Write a concise MANAGEMENT DISCUSSION & ANALYSIS for this company from the data below, so the reader "
+                "needn't open the full annual report.\n\nDATA:\n" + ctx +
+                "\n\nRespond (plain text, with these headers):\nBUSINESS & HOW IT MAKES MONEY: 2–3 lines\n"
+                "MANAGEMENT & TRACK RECORD: who runs it and how they've executed (from the multi-year trend + well-known facts)\n"
+                "PERFORMANCE REVIEW: what the recent revenue/profit/margins/CAGR say\nOUTLOOK & KEY RISKS: where management is steering and what could derail it\n"
+                "Base it on the provided data + well-established facts; flag uncertainty; do NOT invent specific numbers.")
     else:
         user = ("Act as my PM and make a call on this stock from the analysis below.\n\nANALYSIS DATA:\n" + ctx +
                 "\n\nRespond (plain text, concise):\nDECISION: Buy / Accumulate / Hold / Reduce / Avoid\nTHESIS: 2–3 sentences\n"
@@ -2350,13 +2407,13 @@ details summary{cursor:pointer;color:var(--mut);font-size:13px}.disc{font-size:1
 <div class="wrap">
 <div class="glass" style="padding:18px">
   <div class="tabs">
-    <div class="tab on" data-tab="search">🔍 Company</div>
-    <div class="tab" data-tab="explore">🧭 Explore by sector</div>
-    <div class="tab" data-tab="models">📊 Model portfolios</div>
-    <div class="tab" data-tab="track">📈 My portfolio (live)</div>
-    <div class="tab" data-tab="markets">🌐 Markets</div>
+    <div class="tab on" data-tab="search">Company</div>
+    <div class="tab" data-tab="explore">Explore by sector</div>
+    <div class="tab" data-tab="models">Model portfolios</div>
+    <div class="tab" data-tab="track">My portfolio (live)</div>
+    <div class="tab" data-tab="markets">Markets</div>
     <div class="tab" data-tab="watch">⭐ Watchlists</div>
-    <div class="tab" data-tab="me" id="metab" style="display:none">👤 My space</div>
+    <div class="tab" data-tab="me" id="metab" style="display:none">My space</div>
   </div>
   <div id="m-search" class="panel">
     <div class="full ac"><label>Company / ticker</label><input id="ticker" placeholder="Type e.g. Reliance, HAL, Apple…" autocomplete="off">
@@ -2409,7 +2466,9 @@ function aiContext(d){return {name:d.name,ticker:d.ticker,sector:d.sector,indust
   technical:{daily:d.technical&&d.technical.daily?{rsi:d.technical.daily.rsi,above_ema200:d.technical.daily.above_ema}:null,
              weekly:d.technical&&d.technical.weekly?{rsi:d.technical.weekly.rsi,above_ema200:d.technical.weekly.above_ema}:null},
   green_flags:d.green_flags,red_flags:d.red_flags,research:d.research,
-  recent_news:(d.news||[]).slice(0,6).map(n=>n.title)};}
+  business_summary:(d.summary||'').slice(0,700),officers:d.officers,
+  history:d.history,business_model:d.business_model,
+  recent_news:(d.news||[]).slice(0,6).map(n=>(n.source?n.source+': ':'')+n.title)};}
 let charts=[],mode='search',UNI={},MOD={};
 function setMode(m){mode=m;document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x.dataset.tab===m));
   ['search','explore','models','track','markets','watch','me'].forEach(k=>el('m-'+k).style.display=k===m?(k==='search'||k==='explore'?'grid':'block'):'none');
@@ -2432,7 +2491,7 @@ function aiMemory(){return AI_LESSONS.length?{lessons:AI_LESSONS}:undefined;}  /
 function paintAuth(){const bar=el('authbar');if(!bar)return;
   if(!SB){bar.innerHTML='';return;}
   el('metab').style.display='block';
-  if(USER){bar.innerHTML=`<span class="muted">👤 ${USER.email||'signed in'}</span><button id="logout">Sign out</button>`;
+  if(USER){bar.innerHTML=`<span class="muted">${USER.email||'signed in'}</span><button id="logout">Sign out</button>`;
     el('logout').onclick=()=>SB.auth.signOut();}
   else{bar.innerHTML=`<button id="login">🔐 Sign in with Google</button>`;
     el('login').onclick=()=>SB.auth.signInWithOAuth({provider:'google',options:{redirectTo:window.location.origin}});}}
@@ -2458,7 +2517,7 @@ function renderMyWatch(box,pfx){
   box.innerHTML=`<section class="glass"><h2>⭐ My watchlists &amp; favorites</h2>
     <div class="panel" style="grid-template-columns:1fr auto;align-items:end;max-width:560px">
       <div><label>List</label><select id="${pfx}lst"></select></div>
-      <button id="${pfx}new" class="dl" style="margin:0">＋ New list</button></div>
+      <button id="${pfx}new" class="dl" style="margin:0">New list</button></div>
     <div class="ac" style="max-width:460px;margin-top:10px"><label>Search a company to add to this list</label>
       <input id="${pfx}sym" placeholder="Type e.g. Reliance, HAL, Apple…" autocomplete="off"><div class="acbox" id="${pfx}box"></div></div>
     <div id="${pfx}list" style="margin-top:12px"><div class="spin"></div></div></section>`;
@@ -2476,17 +2535,17 @@ async function loadMyWatch(pfx){const box=el(pfx+'list');if(!box)return;
   let h='<table><tr><th>Ticker</th><th>Name</th><th>Price</th><th>Day%</th><th>Fav</th><th></th><th></th></tr>';
   mine.forEach(r=>{const x=q[r.ticker];const cur=/\.(NS|BO)$/.test(r.ticker)?'₹':'';const day=(x&&x.prev)?((x.price-x.prev)/x.prev*100):null;
     h+=`<tr><td>${r.ticker.replace('.NS','').replace('.BO','')}</td><td>${esc(r.name||'')}</td><td>${x?cur+fmt(x.price):'—'}</td><td class="${(day||0)>=0?'pos':'neg'}">${day==null?'—':(day>=0?'+':'')+day.toFixed(2)+'%'}</td><td><a href="#" class="favt" data-t="${r.ticker}" data-f="${r.fav?1:0}" style="text-decoration:none">${r.fav?'❤️':'🤍'}</a></td><td><a href="#" class="wlgo" data-t="${r.ticker}">Analyze</a></td><td><a href="#" class="wlrm" data-t="${r.ticker}">✕</a></td></tr>`;});
-  box.innerHTML=h+'</table><p class="muted">Live price &amp; day change shown without analyzing. 🤍→❤️ favorite · ✕ remove from this list. Use ＋ New list to create more.</p>';
+  box.innerHTML=h+'</table><p class="muted">Live price &amp; day change shown without analyzing. 🤍→❤️ favorite · ✕ remove from this list. Use New list to create more.</p>';
   box.querySelectorAll('.wlgo').forEach(a=>a.onclick=e=>{e.preventDefault();gotoTicker(a.dataset.t);});
   box.querySelectorAll('.wlrm').forEach(a=>a.onclick=async e=>{e.preventDefault();await SB.from('watchlist').delete().eq('user_id',USER.id).eq('ticker',a.dataset.t);loadMyWatch(pfx);});
   box.querySelectorAll('.favt').forEach(a=>a.onclick=async e=>{e.preventDefault();await setFav(a.dataset.t,a.dataset.f!=='1');loadMyWatch(pfx);});}
 async function logCall(d){if(!SB||!USER)return;try{await SB.from('search_history').insert(
   {user_id:USER.id,ticker:d.ticker,name:d.name,verdict:(d.research&&d.research.verdict)||null,score:d.overall,price:d.price});}catch(e){}}
 async function renderMe(){const box=el('m-me');
-  if(!SB){box.innerHTML='<section class="glass"><h2>👤 My space</h2><p class="muted">Accounts aren\'t enabled on this deployment. Set SUPABASE_URL & SUPABASE_ANON_KEY (see README) to turn on Google sign-in, saved watchlists and your analysis journal.</p></section>';return;}
-  if(!USER){box.innerHTML='<section class="glass"><h2>👤 My space</h2><p class="muted">Sign in with Google (top-right) to see your saved watchlist and analysis journal.</p></section>';return;}
+  if(!SB){box.innerHTML='<section class="glass"><h2>My space</h2><p class="muted">Accounts aren\'t enabled on this deployment. Set SUPABASE_URL & SUPABASE_ANON_KEY (see README) to turn on Google sign-in, saved watchlists and your analysis journal.</p></section>';return;}
+  if(!USER){box.innerHTML='<section class="glass"><h2>My space</h2><p class="muted">Sign in with Google (top-right) to see your saved watchlist and analysis journal.</p></section>';return;}
   box.innerHTML='<div id="me-watch"></div>'+
-    (window.AI_ON?'<section class="glass"><h2>🧠 AI scan my watchlist</h2><button class="dl" id="ai-scan">🧠 Scan my current list for what to research now</button><div id="ai-scan-out" style="margin-top:10px"></div><p class="muted">Evaluates each name in the selected list (fundamentals + technicals), then the AI ranks what looks most actionable. Educational only.</p></section>':'')+
+    (window.AI_ON?'<section class="glass"><h2>AI scan my watchlist</h2><button class="dl" id="ai-scan">Scan my current list for what to research now</button><div id="ai-scan-out" style="margin-top:10px"></div><p class="muted">Evaluates each name in the selected list (fundamentals + technicals), then the AI ranks what looks most actionable. Educational only.</p></section>':'')+
     '<section class="glass"><h2>📓 Analysis journal &amp; calibration</h2><p class="muted">Your past calls scored against live price — this is how you see which signals actually work for you (no black-box prediction).</p><div id="caloutput"><div class="spin"></div></div></section>';
   renderMyWatch(el('me-watch'),'mw_');
   if(window.AI_ON&&el('ai-scan'))el('ai-scan').onclick=aiScanWatchlist;
@@ -2516,19 +2575,19 @@ async function calibrate(hr){const box=el('caloutput');if(!box)return;if(!hr.len
     t+=`<tr><td>${(r.at||'').slice(0,10)}</td><td>${r.ticker.replace('.NS','')}</td><td>${r.verdict||'—'}</td><td>${r.score??'—'}</td><td>${fmt(r.price)}</td><td>${now==null?'—':fmt(now)}</td><td class="${rc}">${ret==null?'—':(ret>=0?'+':'')+ret.toFixed(1)+'%'}</td></tr>`;});
   const hit=scored?Math.round(wins/scored*100):null;
   const lessonsHtml=window.AI_ON?`<hr style="border:0;border-top:1px solid var(--line);margin:14px 0">
-    <h3>🧠 AI memory — lessons it has learned <span class="muted">(fed into every future AI decision)</span></h3>
+    <h3>AI memory — lessons it has learned <span class="muted">(fed into every future AI decision)</span></h3>
     <div id="ai-lessons">${AI_LESSONS.length?AI_LESSONS.map(l=>`<div class="flag f-good">• ${esc(l)}</div>`).join(''):'<p class="muted">No lessons yet — click below to have the AI review your track record and learn from it.</p>'}</div>
-    <button class="dl" id="ai-coach" style="margin-top:8px">🧠 Coach me (advice)</button>
-    <button class="dl" id="ai-learn" style="margin-top:8px">📚 Self-review &amp; learn lessons</button>
+    <button class="dl" id="ai-coach" style="margin-top:8px">Coach me (advice)</button>
+    <button class="dl" id="ai-learn" style="margin-top:8px">Self-review &amp; learn lessons</button>
     <div id="ai-coach-out" style="margin-top:8px"></div>`:'';
-  box.innerHTML=(hit!=null?`<div class="rec">🎯 Directional hit-rate so far: <b>${hit}%</b> on ${scored} scored calls. ${hit>=60?'Your calls are adding value — keep the discipline.':hit>=45?'Roughly coin-flip — tighten your criteria.':'Below 50% — review what your "Buy" calls have in common.'}</div>`:'')+t+'</table>'+lessonsHtml;
+  box.innerHTML=(hit!=null?`<div class="rec">Directional hit-rate so far: <b>${hit}%</b> on ${scored} scored calls. ${hit>=60?'Your calls are adding value — keep the discipline.':hit>=45?'Roughly coin-flip — tighten your criteria.':'Below 50% — review what your "Buy" calls have in common.'}</div>`:'')+t+'</table>'+lessonsHtml;
   if(window.AI_ON&&el('ai-coach'))el('ai-coach').onclick=()=>aiPost('/ai_analyst',{mode:'coach',context:{hit_rate_pct:hit,scored_calls:scored,journal:journal.slice(0,40)}},'ai-coach-out','Reviewing your calls…');
   if(window.AI_ON&&el('ai-learn'))el('ai-learn').onclick=async()=>{const b=el('ai-coach-out');b.innerHTML='<div class="spin"></div><p class="muted" style="text-align:center">Reviewing outcomes & distilling lessons…</p>';
     try{const r=await(await fetch('/ai_analyst',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode:'lessons',context:{hit_rate_pct:hit,journal:journal.slice(0,40)}})})).json();
       if(!r.text){b.innerHTML=`<p class="muted">${esc(r.note||r.error||'No lessons.')}</p>`;return;}
       const newLessons=r.text.split('\n').map(s=>s.replace(/^[-•*\\d.\\s]+/,'').trim()).filter(s=>s.length>8);
       if(newLessons.length&&SB&&USER){try{await SB.from('ai_lessons').insert(newLessons.map(c=>({user_id:USER.id,content:c.slice(0,400)})));await loadLessons();}catch(e){b.innerHTML='<p class="muted">Lessons generated but could not be saved — run the ai_lessons migration in the README. '+esc(e.message||'')+'</p>';return;}}
-      b.innerHTML=`<div class="rec" style="white-space:pre-wrap">📚 New lessons saved — they'll now inform every future AI decision:\n${esc(newLessons.map(l=>'• '+l).join('\n'))}</div><p class="muted">${AI_DISCLAIMER}</p>`;
+      b.innerHTML=`<div class="rec" style="white-space:pre-wrap">New lessons saved — they'll now inform every future AI decision:\n${esc(newLessons.map(l=>'• '+l).join('\n'))}</div><p class="muted">${AI_DISCLAIMER}</p>`;
       renderMe();
     }catch(e){b.innerHTML='<p class="muted">Self-review failed.</p>';}};}
 
@@ -2654,31 +2713,31 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
       <div class="chip">Overall<b>${d.overall??'—'} / 10</b></div>
       <div class="chip">${d.style.label}<b>${d.style.score??'—'}/10</b><span class="muted">${d.style.take}</span></div>
       <div class="chip">Valuation<b><span class="verdict ${vcls(d.valuation.verdict)}">${d.valuation.verdict}</span></b></div></div>
-    <div class="rec" style="margin-top:14px">💡 ${d.recommendation}</div>
+    <div class="rec" style="margin-top:14px">${d.recommendation}</div>
     ${d.summary?`<details style="margin-top:12px"><summary>Business summary</summary><p class="muted">${d.summary}</p></details>`:''}</section>`));
 
   // research assistant summary (Buy/Hold/Avoid)
   const rv=d.research, vc=rv.verdict==='Buy'?'v-under':rv.verdict==='Avoid'?'v-over':'v-fair';
-  out.append($(`<section class="glass"><h2>🤖 Research summary</h2>
+  out.append($(`<section class="glass"><h2>Research summary</h2>
     <div class="grid two"><div><h3>Strengths</h3>${(rv.strengths||[]).length?rv.strengths.map(x=>`<div class="flag f-good">${x}</div>`).join(''):'<div class="muted">None detected.</div>'}</div>
     <div><h3>Risks</h3>${(rv.risks||[]).length?rv.risks.map(x=>`<div class="flag f-bad">${x}</div>`).join(''):'<div class="muted">None detected.</div>'}</div></div>
     <div style="margin-top:10px">Verdict: <span class="verdict ${vc}">${rv.verdict}</span> <span class="muted">— ${rv.why}</span></div></section>`));
 
-  // 🧠 AI analyst — separate, collapsible dropdown so your manual analysis stands alone
-  out.append($(`<section class="glass"><details><summary style="font-size:18px;font-weight:600;cursor:pointer">🧠 AI analyst — opinion <span class="muted" style="font-weight:400">(optional · click to expand)</span></summary>
+  // AI analyst — separate, collapsible dropdown so your manual analysis stands alone
+  out.append($(`<section class="glass"><details><summary style="font-size:18px;font-weight:600;cursor:pointer">AI analyst — opinion <span class="muted" style="font-weight:400">(optional · click to expand)</span></summary>
     <div style="margin-top:10px">
     ${window.AI_ON?`<p class="muted">Reasons over the computed numbers above — it won't invent figures. ${AI_DISCLAIMER}</p>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
-        <button class="dl" id="ai-go" style="margin:0">🧠 Decision</button>
-        <button class="dl" id="ai-bear" style="margin:0">🐻 Bear case</button>
-        <button class="dl" id="ai-news" style="margin:0">📰 News digest</button>
-        <button class="dl" id="ai-best" style="margin:0">🏆 Best in sector</button></div>
+        <button class="dl" id="ai-go" style="margin:0">Decision</button>
+        <button class="dl" id="ai-bear" style="margin:0">Bear case</button>
+        <button class="dl" id="ai-news" style="margin:0">News digest</button>
+        <button class="dl" id="ai-best" style="margin:0">Best in sector</button></div>
       <div id="ai-out" style="margin-top:10px"></div>
       <div class="ac" style="max-width:560px;margin-top:10px"><label>Ask a finance follow-up about this stock</label>
         <div style="display:flex;gap:8px"><input id="ai-q" placeholder='e.g. "is the debt a worry?", "value it for a 5-year hold"'><button class="dl" id="ai-ask" style="margin:0">Ask</button></div></div>
       <div id="ai-chat" style="margin-top:8px"></div>
       <hr style="border:0;border-top:1px solid var(--line);margin:14px 0">
-      <h3>⚔️ AI compare with another stock</h3>
+      <h3>AI compare with another stock</h3>
       <div class="ac" style="max-width:460px"><input id="ai-cmp" placeholder="Type a 2nd company to compare…" autocomplete="off"><div class="acbox" id="ai-cmpbox"></div></div>
       <button class="dl" id="ai-cmp-go" style="margin-top:6px">Compare which is the better buy ▸</button>
       <div id="ai-cmp-out" style="margin-top:8px"></div>`
@@ -2696,7 +2755,7 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
     el('ai-ask').onclick=async()=>{const q=el('ai-q').value.trim();if(!q)return;const cc=el('ai-chat');
       cc.innerHTML='<div class="flag" style="background:rgba(110,168,254,.1)"><b>You:</b> '+esc(q)+'</div><div class="spin"></div>';
       try{const r=await(await fetch('/ai_chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({q,context:ctx})})).json();
-        cc.innerHTML='<div class="flag" style="background:rgba(110,168,254,.1)"><b>You:</b> '+esc(q)+'</div>'+(r.text?`<div class="flag f-good" style="white-space:pre-wrap">🧠 ${esc(r.text)}</div><p class="muted">${AI_DISCLAIMER}</p>`:`<div class="muted">${esc(r.error||'No answer.')}</div>`);
+        cc.innerHTML='<div class="flag" style="background:rgba(110,168,254,.1)"><b>You:</b> '+esc(q)+'</div>'+(r.text?`<div class="flag f-good" style="white-space:pre-wrap">${esc(r.text)}</div><p class="muted">${AI_DISCLAIMER}</p>`:`<div class="muted">${esc(r.error||'No answer.')}</div>`);
       }catch(e){cc.innerHTML='<p class="muted">AI call failed.</p>';}};
     let cmpB=null;acWire('ai-cmp','ai-cmpbox',sym=>{cmpB=sym;el('ai-cmp').value=sym.replace('.NS','').replace('.BO','');});
     el('ai-cmp-go').onclick=async()=>{const b=cmpB||el('ai-cmp').value.trim().toUpperCase();if(!b){alert('Pick a second company.');return;}
@@ -2706,12 +2765,39 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
       }catch(e){o3.innerHTML='<p class="muted">Compare failed.</p>';}};
   }
 
+  // Business model — collapsible (summary + revenue-allocation donut + standout metrics)
+  const bm=d.business_model;
+  const standout=[];
+  if(d.quality){if((d.quality.roce||0)>=18)standout.push('High capital efficiency (ROCE '+d.quality.roce+'%)');
+    if((d.quality.fcf_yield||0)>=4)standout.push('Strong cash generation (FCF yield '+d.quality.fcf_yield+'%)');
+    if(d.quality.piotroski!=null&&d.quality.piotroski>=7)standout.push('Top-tier fundamental quality (Piotroski '+d.quality.piotroski+'/'+d.quality.piotroski_max+')');}
+  const npmR=d.ratios&&d.ratios['Net/PAT margin %']?d.ratios['Net/PAT margin %'].value:null;
+  if(npmR!=null&&npmR>=15)standout.push('Healthy net margin ('+npmR+'%)');
+  out.append($(`<section class="glass"><details id="bm-det" open><summary style="font-size:18px;font-weight:600;cursor:pointer">Business model — what it does &amp; how it earns</summary>
+    <div style="margin-top:10px">
+      ${d.summary?`<p class="muted" style="line-height:1.6">${esc(d.summary)}</p>`:'<p class="muted">No business summary available from the data feed.</p>'}
+      ${bm?`<div class="grid two" style="margin-top:12px;align-items:center">
+        <div><canvas id="cBM" height="180"></canvas><div class="muted" style="text-align:center">Where each ₹100 of revenue goes</div></div>
+        <div><h3 style="margin-top:0">Revenue allocation</h3>${bm.slices.map(s=>`<div class="kv">${esc(s.label)}: <b>${s.pct}%</b></div>`).join('')}<div class="kv muted" style="margin-top:6px;font-size:12px">${esc(bm.note)}</div></div></div>`:''}
+      ${standout.length?`<h3>What makes it stand out</h3>${standout.map(s=>`<div class="flag f-good">${esc(s)}</div>`).join('')}`:''}
+    </div></details></section>`));
+  if(bm){const det=el('bm-det');const draw=()=>{if(!det._d){det._d=1;drawDonut('cBM',bm.slices);}};det.addEventListener('toggle',()=>{if(det.open)draw();});if(det.open)draw();}
+
+  // Management & MD&A — collapsible
+  out.append($(`<section class="glass"><details><summary style="font-size:18px;font-weight:600;cursor:pointer">Management &amp; MD&amp;A</summary>
+    <div style="margin-top:10px">
+      ${(d.officers&&d.officers.length)?`<h3 style="margin-top:0">Key people</h3><table><tr><th>Name</th><th>Title</th><th>Age</th><th>Pay</th></tr>${d.officers.map(o=>`<tr><td>${esc(o.name||'')}</td><td>${esc(o.title||'')}</td><td>${o.age||'—'}</td><td>${o.pay?cur+fmt(o.pay):'—'}</td></tr>`).join('')}</table>`:'<p class="muted">Management roster not in the data feed — use the primary sources below.</p>'}
+      <p class="muted" style="margin-top:8px">Primary sources: ${(d.references||[]).map(r=>`<a href="${safeUrl(r.url)}" target="_blank" rel="noopener noreferrer">${esc(r.label.split(' —')[0].split(' (')[0])}</a>`).join(' · ')}</p>
+      ${window.AI_ON?`<button class="dl" id="ai-mda">Generate management discussion &amp; analysis (MD&amp;A)</button><div id="ai-mda-out" style="margin-top:8px"></div>`:'<p class="muted">Enable the AI analyst to auto-write an MD&A here so you needn\\'t read the full annual report.</p>'}
+    </div></details></section>`));
+  if(window.AI_ON&&el('ai-mda'))el('ai-mda').onclick=()=>aiPost('/ai_analyst',{mode:'mda',context:aiContext(d)},'ai-mda-out','Writing the MD&A…');
+
   // institutional quality & solvency highlight
   const q=d.quality||{};
   if(q.piotroski!=null||q.altman_z!=null||q.roce!=null||q.ev_ebitda!=null){
     const zc=q.altman_z==null?'':q.altman_z>=3?'pos':q.altman_z<1.81?'neg':'';
     const fc=q.piotroski==null?'':q.piotroski>=7?'pos':q.piotroski<=3?'neg':'';
-    out.append($(`<section class="glass"><h2>🏛️ Institutional quality &amp; solvency <span class="muted">(from the statements)</span></h2>
+    out.append($(`<section class="glass"><h2>Institutional quality &amp; solvency <span class="muted">(from the statements)</span></h2>
       <div class="grid cards">
         <div class="chip">${tip('Piotroski F')}<b class="${fc}">${q.piotroski==null?'—':q.piotroski+' / '+q.piotroski_max}</b><span class="muted">fundamental quality</span></div>
         <div class="chip">${tip('Altman Z')}<b class="${zc}">${q.altman_z??'—'}</b><span class="muted">${q.altman_z==null?'':q.altman_z>=3?'Safe':q.altman_z<1.81?'Distress zone':'Grey zone'}</span></div>
@@ -2723,7 +2809,7 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
       <p class="muted">${q.note} Hover any term for what it is &amp; how to use it.</p></section>`));}
 
   // download bar
-  out.append($(`<section class="glass" style="padding:12px 18px"><b>⬇️ Export to Excel/CSV:</b>
+  out.append($(`<section class="glass" style="padding:12px 18px"><b>Export to Excel/CSV:</b>
     <button class="dl" onclick="dlFundamental()">Fundamental analysis</button>
     <button class="dl" onclick="dlTechnical()">Technical analysis</button>
     <span class="muted">CSV opens directly in Excel/Sheets — keep your own records.</span></section>`));
@@ -2758,18 +2844,18 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
     <p class="muted" style="margin-top:8px">FCF used ${money(cur,val.fcf,null)} (${val.fcf_source||'n/a'}). A high P/E isn't automatically "overvalued" — if growth, quality and the global industry support it, paying up can be justified.</p></section>`));
   loadIndustryPE(d.ticker,d.sector);
 
-  let rt='<section class="glass"><h2>Ratio analysis <span class="muted">— hover for the definition'+(window.AI_ON?'; click 🧠 for an AI explanation for THIS company':'')+'</span></h2><table><tr><th>Metric</th><th>Value</th><th style="text-align:left">What it means · benchmark</th></tr>';
+  let rt='<section class="glass"><h2>Ratio analysis <span class="muted">— hover for the definition'+(window.AI_ON?'; click for an AI explanation for THIS company':'')+'</span></h2><table><tr><th>Metric</th><th>Value</th><th style="text-align:left">What it means · benchmark</th></tr>';
   for(const[k,o]of Object.entries(d.ratios)){const u=o.unit||'';
     const disp=o.value==null?'—':(o.inr!==undefined?money(cur,o.value,o.inr):(u==='%'?o.value+'%':u==='x'?o.value+'x':o.value));
     const meaning=o.text?`<span class="dot d-${o.rating}"></span>${o.text}${o.bench?' <span class="muted">('+o.bench+')</span>':''}`:'<span class="muted">—</span>';
-    const aiex=window.AI_ON?` <a href="#" class="aiex" data-m="${esc(k)}" data-v="${o.value==null?'':o.value}" title="AI explain for this company" style="text-decoration:none">🧠</a>`:'';
+    const aiex=window.AI_ON?` <a href="#" class="aiex" data-m="${esc(k)}" data-v="${o.value==null?'':o.value}" title="AI explain for this company" style="text-decoration:none"></a>`:'';
     rt+=`<tr><td>${tip(k)}${aiex}</td><td>${disp}</td><td style="text-align:left;font-size:12px">${meaning}</td></tr>`;}
   out.append($(rt+'</table><div id="aiex-out"></div><p class="muted">🟢 good · 🟡 ok · 🔴 watch. Benchmarks are general rules of thumb; compare within the same sector.</p></section>'));
   if(window.AI_ON){const ctx2=aiContext(d);document.querySelectorAll('.aiex').forEach(a=>a.onclick=async e=>{e.preventDefault();
     const m=a.dataset.m,v=a.dataset.v,box=el('aiex-out');box.innerHTML=`<div class="flag" style="background:rgba(110,168,254,.1)"><div class="spin" style="margin:6px auto"></div><div class="muted" style="text-align:center">AI explaining ${esc(m)}…</div></div>`;
     try{const r=await(await fetch('/ai_chat',{method:'POST',headers:{'content-type':'application/json'},
       body:JSON.stringify({q:`Explain the metric "${m}" (value: ${v||'n/a'}) specifically for ${d.name}: what it measures, whether this level is good/bad for THIS company and sector, and what it implies — 3-4 sentences.`,context:ctx2})})).json();
-      box.innerHTML=r.text?`<div class="flag f-good" style="white-space:pre-wrap"><b>🧠 ${esc(m)}:</b> ${esc(r.text)}</div><p class="muted">${AI_DISCLAIMER}</p>`:`<p class="muted">${esc(r.error||'No answer.')}</p>`;
+      box.innerHTML=r.text?`<div class="flag f-good" style="white-space:pre-wrap"><b>${esc(m)}:</b> ${esc(r.text)}</div><p class="muted">${AI_DISCLAIMER}</p>`:`<p class="muted">${esc(r.error||'No answer.')}</p>`;
     }catch(err){box.innerHTML='<p class="muted">AI call failed.</p>';}});}
 
   out.append($(`<section class="glass"><h2>Technical analysis</h2><div class="grid two">${tf('Daily',d.technical.daily)}${tf('Weekly',d.technical.weekly)}</div>
@@ -2779,7 +2865,7 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
   drawLine('cD',d.technical.daily);drawLine('cW',d.technical.weekly);
 
   // advanced CMT technicals (indicators + pattern detection, daily/weekly switch)
-  out.append($(`<section class="glass"><h2>📐 Advanced technicals (CMT) — indicators &amp; chart patterns</h2>
+  out.append($(`<section class="glass"><h2>Advanced technicals (CMT) — indicators &amp; chart patterns</h2>
     <div class="seg" id="tfseg"><button class="on" data-tf="daily">Daily</button><button data-tf="weekly">Weekly</button></div>
     <div id="taout" style="margin-top:12px"><div class="spin"></div></div></section>`));
   document.getElementById('tfseg').querySelectorAll('button').forEach(b=>b.onclick=()=>{
@@ -2788,7 +2874,7 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
 
   // price range & period stats (high/low/avg/change over 1M…Max/ATH)
   const RNGS=[['1mo','1M'],['6mo','6M'],['1y','1Y'],['5y','5Y'],['10y','10Y'],['max','Max / ATH']];
-  out.append($(`<section class="glass"><h2>📅 Price range &amp; period stats</h2>
+  out.append($(`<section class="glass"><h2>Price range &amp; period stats</h2>
     <div class="seg" id="rngseg">${RNGS.map(([r,l],i)=>`<button data-r="${r}" class="${i==2?'on':''}">${l}</button>`).join('')}</div>
     <div id="rngout" style="margin-top:10px"><div class="spin"></div></div></section>`));
   document.getElementById('rngseg').querySelectorAll('button').forEach(b=>b.onclick=()=>{
@@ -2809,16 +2895,16 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
 
   // sector analysis
   const sa=d.sector_analysis;
-  let sh=`<section class="glass"><h2>🧭 Sector analysis — ${sa.name||''}</h2><p class="muted">Recent sector news sentiment: <span class="pos">${sa.tally.pos} positive</span> · <span class="neg">${sa.tally.neg} negative</span>. ${sa.note}</p><div class="news">`;
-  sh+=sa.news.length?sa.news.map(n=>`<div class="flag ${n.tone=='neg'?'f-bad':n.tone=='pos'?'f-good':''}"><a href="${safeUrl(n.link)}" target="_blank" rel="noopener noreferrer">${esc(n.title)}</a> <small class="muted">${n.date}</small></div>`).join(''):'<div class="muted">No sector headlines.</div>';
+  let sh=`<section class="glass"><h2>Sector analysis — ${sa.name||''}</h2><p class="muted">Recent sector news sentiment: <span class="pos">${sa.tally.pos} positive</span> · <span class="neg">${sa.tally.neg} negative</span>. ${sa.note}</p><div class="news">`;
+  sh+=sa.news.length?sa.news.map(n=>`<div class="flag ${n.tone=='neg'?'f-bad':n.tone=='pos'?'f-good':''}"><a href="${safeUrl(n.link)}" target="_blank" rel="noopener noreferrer">${esc(n.title)}</a> <small class="muted">${esc(n.source||"")}${n.source?" · ":""}${n.date}</small></div>`).join(''):'<div class="muted">No sector headlines.</div>';
   out.append($(sh+'</div></section>'));
 
-  out.append($(`<section class="glass"><h2>⚔️ Peer comparison <span class="muted">— ${d.peer_sector||''}</span></h2><div id="peerbox" class="muted">Loading peers…</div></section>`));
+  out.append($(`<section class="glass"><h2>Peer comparison <span class="muted">— ${d.peer_sector||''}</span></h2><div id="peerbox" class="muted">Loading peers…</div></section>`));
   if(d.peers&&d.peers.length)loadPeers(d.ticker,d.peers,cur);else el('peerbox').textContent='No mapped peers yet.';
 
   // allocation + portfolio plan
   const a=d.allocation,p=d.portfolio_plan;
-  out.append($(`<section class="glass"><h2>💰 Allocation &amp; portfolio plan</h2>
+  out.append($(`<section class="glass"><h2>Allocation &amp; portfolio plan</h2>
     ${a.shares!=null?`<div class="grid cards"><div class="chip">Suggested weight<b>${a.suggested_weight_pct}%</b></div>
       <div class="chip">Shares to buy<b>${a.shares}</b></div><div class="chip">Amount<b>${cur}${fmt(a.amount)}</b></div>
       <div class="chip">Cash left<b>${cur}${fmt(a.cash_left)}</b></div></div><p class="muted">${a.note}</p>`:`<p class="muted">${a.note}</p>`}
@@ -2828,19 +2914,19 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
       <p class="muted">${p.note}</p>`:`<p class="muted">${p.note||''}</p>`}</section>`));
 
   // corporate actions + institutions
-  let ca='<section class="glass"><div class="grid two"><div><h2>📅 Corporate actions</h2>';
+  let ca='<section class="glass"><div class="grid two"><div><h2>Corporate actions</h2>';
   ca+=d.corporate_actions.length?d.corporate_actions.map(c=>`<div class="kv"><b>${c.type}</b> — ${c.date}${c.value?' ('+c.value+')':''}</div>`).join(''):'<div class="muted">None in Yahoo data.</div>';
-  ca+=`</div><div><h2>🏛️ Institutional activity</h2><p>Institutional holding: <b>${d.institutional.pct||'—'}</b></p>`;
+  ca+=`</div><div><h2>Institutional activity</h2><p>Institutional holding: <b>${d.institutional.pct||'—'}</b></p>`;
   if(d.institutional.holders.length){ca+='<table><tr><th>Top holders</th><th>%</th></tr>';d.institutional.holders.forEach(h=>ca+=`<tr><td>${h.name}</td><td>${h.pct.toFixed(2)}%</td></tr>`);ca+='</table>';}
   out.append($(ca+`<p class="muted">${d.institutional.note}</p></div></div></section>`));
 
-  let nh='<section class="glass"><h2>📰 Live news</h2><div class="news">';
-  nh+=d.news.length?d.news.map(n=>`<div class="flag ${n.tone=='neg'?'f-bad':n.tone=='pos'?'f-good':''}"><a href="${safeUrl(n.link)}" target="_blank" rel="noopener noreferrer">${esc(n.title)}</a> <small class="muted">${n.date}</small></div>`).join(''):'<div class="muted">No headlines.</div>';
+  let nh='<section class="glass"><h2>Live news</h2><div class="news">';
+  nh+=d.news.length?d.news.map(n=>`<div class="flag ${n.tone=='neg'?'f-bad':n.tone=='pos'?'f-good':''}"><a href="${safeUrl(n.link)}" target="_blank" rel="noopener noreferrer">${esc(n.title)}</a> <small class="muted">${esc(n.source||"")}${n.source?" · ":""}${n.date}</small></div>`).join(''):'<div class="muted">No headlines.</div>';
   out.append($(nh+'</div><p class="muted">Live from Google News (14d). Tone is a keyword heuristic — read the source.</p></section>'));
 
   // proof / methodology
   const m=d.methodology;
-  let pf='<section class="glass"><h2>🔬 How this was calculated (proof)</h2>';
+  let pf='<section class="glass"><h2>How this was calculated (proof)</h2>';
   pf+=`<div class="kv"><b>Ratios.</b> ${m.ratios_source}</div>`;
   pf+=`<div class="kv"><b>Free cash flow.</b> ${money(cur,m.fcf.value,null)} via ${m.fcf.source}. ${Object.keys(m.fcf.components||{}).length?'Components: '+JSON.stringify(m.fcf.components):''}</div>`;
   pf+=`<div class="kv"><b>DCF.</b> ${m.dcf.formula}<br>Inputs → FCF ${money(cur,m.dcf.fcf,null)}, growth ${m.dcf.growth_pct}%, discount ${m.dcf.discount_pct}%, ${m.dcf.years}y, terminal ${m.dcf.terminal_growth_pct}% ⇒ fair value ${money(cur,m.dcf.fair_value,null)}.</div>`;
@@ -2861,6 +2947,9 @@ function tf(label,t){if(!t)return `<div class="chip"><b>${label}</b><div class="
   const r=t.rsi,zone=r==null?'—':r<30?'Oversold 🟢':r>70?'Overbought 🔴':'Neutral 🟡';
   return `<div class="chip"><b>${label}</b><div>RSI(14): <b>${r??'—'}</b> <span class="muted">${zone}</span></div><div>Trend: <b>${t.above_ema?'Above EMA200 ▲':'Below EMA200 ▼'}</b></div><div class="muted">EMA200 ${t.ema200}</div></div>`;}
 function drawLine(id,t){if(!t)return;charts.push(new Chart(el(id),{type:'line',data:{labels:t.dates,datasets:[{label:'Price',data:t.series,borderColor:'#6ea8fe',borderWidth:1.5,pointRadius:0,tension:.2},{label:'EMA200',data:t.dates.map(()=>t.ema200),borderColor:'#ffd166',borderWidth:1,pointRadius:0,borderDash:[5,4]}]},options:{plugins:{legend:{labels:{color:'#8b97ad'}}},scales:{x:{ticks:{color:'#8b97ad',maxTicksLimit:6}},y:{ticks:{color:'#8b97ad'}}}}}));}
+function drawDonut(id,slices){const lbls=slices.map(s=>s.label),vals=slices.map(s=>Math.abs(s.pct));
+  charts.push(new Chart(el(id),{type:'doughnut',data:{labels:lbls,datasets:[{data:vals,backgroundColor:['#ff6b6b','#ffd166','#b39bff','#6ea8fe','#39d98a','#5ad1c8','#f08fc0']}]},
+    options:{plugins:{legend:{position:'right',labels:{color:'#8b97ad',boxWidth:10,font:{size:11}}},tooltip:{callbacks:{label:ctx=>ctx.label+': '+ctx.parsed+'%'}}}}}));}
 function drawHist(id,h,cur){cur=cur||'₹';const keys=Object.keys(h),labels=Object.keys(h[keys[0]]).reverse(),col={'Revenue':'#6ea8fe','EBITDA':'#b39bff','Net Income':'#39d98a'};
   // values are raw (full currency units). Show axis & tooltips in Cr/L via fmt() so they're readable.
   charts.push(new Chart(el(id),{type:'bar',data:{labels,datasets:keys.map(k=>({label:k,data:labels.map(l=>h[k][l]),backgroundColor:col[k]||'#888'}))},
@@ -2889,7 +2978,7 @@ async function loadTechnicals(ticker,cur,tf){const box=el('taout');if(!box)retur
   h+='</table><h3>Chart patterns detected</h3>';
   if(t.patterns&&t.patterns.length){h+=t.patterns.map(p=>{const c=p.bias==='bullish'?'f-good':p.bias==='bearish'?'f-bad':'';return `<div class="flag ${c}"><b>${p.name}</b> <span class="pill ${p.bias==='bullish'?'yes':p.bias==='bearish'?'no':''}">${p.bias} · ${p.confidence}</span><div style="font-size:12px;margin-top:3px">${p.detail}</div></div>`;}).join('');}
   else h+='<div class="muted">No clear textbook pattern right now (that itself is information — the trend is undecided).</div>';
-  h+=`<div style="margin-top:12px"><canvas id="cTA" height="150"></canvas><div class="muted" style="text-align:center">Close + SMA50/200 + Bollinger bands; ◆ marks pattern swing points</div></div>`;
+  h+=`<div style="margin-top:12px"><canvas id="cTA" height="150"></canvas><div class="muted" style="text-align:center">Close + SMA50/200 + Bollinger bands; marks pattern swing points</div></div>`;
   h+=`<p class="muted">${t.note}</p>`;
   box.innerHTML=h;drawTA('cTA',t);}
 
@@ -2929,7 +3018,7 @@ function drawTA(id,t){const c=t.chart,base=c.base;
 // ---- model portfolios: sector allocation, then drill into strong companies ----
 let curSec=null;
 function renderModels(){const cap=+el('capital').value||100000;
-  let h=`<section class="glass"><h2>📊 Model portfolios — sector allocation</h2><p class="muted">How capital is split across <b>sectors</b> for each risk profile (equity only, ₹${fmt(cap)}). Pick a ranking, then click any sector to load strong companies. Templates, not live-trend forecasts.</p>
+  let h=`<section class="glass"><h2>Model portfolios — sector allocation</h2><p class="muted">How capital is split across <b>sectors</b> for each risk profile (equity only, ₹${fmt(cap)}). Pick a ranking, then click any sector to load strong companies. Templates, not live-trend forecasts.</p>
     <div style="margin:6px 0 14px"><label>Rank strong picks by</label><select id="tilt" style="max-width:260px">
       <option value="fundamental">Fundamentally strong (quality)</option><option value="dividend">Dividend yield</option>
       <option value="momentum">Momentum (6-month)</option><option value="lowbeta">Low beta (stable)</option></select>
@@ -2958,22 +3047,22 @@ function savePort(p){localStorage.setItem(PKEY,JSON.stringify(p))}
 let trackTimer;
 const CKEY='stocklens_capital';
 function renderTracker(){const p=loadPort();
-  let h=`<section class="glass"><h2>📈 My portfolio — live</h2>
+  let h=`<section class="glass"><h2>My portfolio — live</h2>
     <div class="panel"><div class="ac"><label>Ticker</label><input id="t-sym" placeholder="Type e.g. HAL, Apple…" autocomplete="off"><div class="acbox" id="t-acbox"></div></div>
     <div><label>Qty</label><input id="t-qty" type="number" min="0"></div><div><label>Buy price (avg)</label><input id="t-buy" type="number" min="0"></div>
     <button id="t-add">Add holding</button></div>
     <div class="panel" style="margin-top:10px"><div><label>Total capital (₹) <span class="tip" data-tip="Your overall investable corpus. Used as the base for position-sizing suggestions.">ⓘ</span></label><input id="t-cap" type="number" min="0" value="${localStorage.getItem(CKEY)||200000}"></div>
     <div><label>Extra cash to deploy (₹) <span class="tip" data-tip="New money you want to add right now. The rebalancer routes it to the strongest / below-buy names.">ⓘ</span></label><input id="t-extra" type="number" min="0" value="0"></div>
     <div><label>Investment horizon <span class="tip" data-tip="How long you plan to hold. Sets the SL/TP window and how patiently weak names are treated.">ⓘ</span></label><select id="t-hz"><option value="short">Short (≤3y)</option><option value="medium" selected>Medium (3–7y)</option><option value="long">Long (7y+)</option></select></div></div>
-    <div style="margin:10px 0"><button id="t-eval" class="full" style="margin-bottom:8px">🎯 Evaluate &amp; rebalance my portfolio</button>
-    <button id="t-opt" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">🧮 Quant analytics</button>
-    <button id="t-csv" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">⬇️ Export CSV</button>
-    <button id="t-refresh" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">↻ Refresh now</button></div>
+    <div style="margin:10px 0"><button id="t-eval" class="full" style="margin-bottom:8px">Evaluate &amp; rebalance my portfolio</button>
+    <button id="t-opt" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">Quant analytics</button>
+    <button id="t-csv" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">Export CSV</button>
+    <button id="t-refresh" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">Refresh now</button></div>
     <div class="muted" style="font-size:12px;margin-bottom:8px">
-      <b>🎯 Evaluate &amp; rebalance</b>: rates every holding (fundamentals + technicals), final verdict, SL/TP, what to buy/sell/switch. ·
-      <b>🧮 Quant analytics</b>: Sharpe, VaR, Monte-Carlo, efficient frontier, correlation. ·
-      <b>⬇️ Export CSV</b>: download your holdings + P&L. ·
-      <b>↻ Refresh</b>: re-pull live prices (auto every 60s).</div>
+      <b>Evaluate &amp; rebalance</b>: rates every holding (fundamentals + technicals), final verdict, SL/TP, what to buy/sell/switch. ·
+      <b>Quant analytics</b>: Sharpe, VaR, Monte-Carlo, efficient frontier, correlation. ·
+      <b>Export CSV</b>: download your holdings + P&L. ·
+      <b>Refresh</b>: re-pull live prices (auto every 60s).</div>
     <div id="t-summary"></div>
     <div id="t-table"><div class="muted">No holdings yet — add one above.</div></div>
     <div class="grid two" style="margin-top:8px"><div><canvas id="t-alloc" height="150"></canvas><div class="muted" style="text-align:center">Allocation by value</div></div><div id="t-movers"></div></div></section>
@@ -3003,23 +3092,23 @@ async function evalPort(){const p=loadPort();if(p.length<1){el('t-eval-out').inn
 function vcl(v){return (v==='Accumulate')?'pos':(v==='Exit'||v==='Reduce')?'neg':'';}
 function renderEval(d){const o=el('t-eval-out');o.innerHTML='';
   const oc=d.overall_health>=6.5?'v-under':d.overall_health>=5?'v-fair':'v-over';
-  o.append($(`<section class="glass"><h2>🎯 Portfolio evaluation</h2>
+  o.append($(`<section class="glass"><h2>Portfolio evaluation</h2>
     <div class="grid cards"><div class="chip">Portfolio value<b>₹${fmt(d.total_value)}</b></div>
     <div class="chip">Overall health<b>${d.overall_health}/10</b></div>
     <div class="chip">Verdict<b><span class="verdict ${oc}">${d.overall_verdict}</span></b></div>
     <div class="chip">Blended earnings CAGR<b>${d.portfolio_earnings_cagr==null?'—':d.portfolio_earnings_cagr+'%'}</b><span class="muted">vs NIFTY ~12%</span></div></div></section>`));
   // decisive final verdict (headline + numbered actions with the WHY/HOW for each)
   if(d.final_verdict){const fvh=esc(d.final_verdict.headline).replace(/\*\*(.+?)\*\*/g,'<b>$1</b>');
-    o.append($(`<section class="glass"><h2>🧠 If I were you — final verdict</h2>
+    o.append($(`<section class="glass"><h2>If I were you — final verdict</h2>
       <div class="rec" style="font-size:15px;line-height:1.6">${fvh}</div>
       <h3>Step by step — what I'd do &amp; why</h3>
       <div>${d.final_verdict.actions.map((a,i)=>`<div class="flag ${/sell|trim|diversify|cut|research/i.test(a.do)?'f-bad':'f-good'}" style="margin:8px 0">
         <div><b>${i+1}. ${esc(a.do)}</b></div><div style="font-size:13px;margin-top:3px" class="muted">${esc(a.why)}</div></div>`).join('')}</div>
       <p class="muted">Each call blends fundamentals (60%) and technicals (40%). A loss-making company can't score "strong" no matter how the chart looks; if a metric is missing the stock is left <b>Not rated</b> rather than guessed.</p></section>`));}
-  // 🧠 AI take on the whole portfolio (on demand)
+  // AI take on the whole portfolio (on demand)
   if(window.AI_ON){
-    o.append($(`<section class="glass"><h2>🧠 AI take on my portfolio</h2>
-      <button class="dl" id="ai-pf">🧠 Ask the AI to review my portfolio</button>
+    o.append($(`<section class="glass"><h2>AI take on my portfolio</h2>
+      <button class="dl" id="ai-pf">Ask the AI to review my portfolio</button>
       <div id="ai-pf-out" style="margin-top:10px"></div></section>`));
     const pctx={overall_health:d.overall_health,overall_verdict:d.overall_verdict,total_value:d.total_value,
       concentration_pct:d.concentration_pct,sectors:d.sectors,sector_rotation:(d.sector_rotation||[]).slice(0,4),
@@ -3031,11 +3120,11 @@ function renderEval(d){const o=el('t-eval-out');o.innerHTML='';
       }catch(e){b.innerHTML='<p class="muted">AI call failed.</p>';}};
   }
   // how to rebalance — explicit steps + the situational plan
-  o.append($(`<section class="glass"><h2>🔁 How to rebalance</h2>
+  o.append($(`<section class="glass"><h2>How to rebalance</h2>
     <ol style="line-height:1.7;padding-left:20px">${(d.steps||[]).map(s=>`<li>${s}</li>`).join('')}</ol>
     <h3>Right now</h3>${d.plan.map(x=>`<div class="flag ${x.indexOf('⚠')>-1?'f-bad':'f-good'}">${x}</div>`).join('')}</section>`));
   // per-stock: separate fundamentals + technicals sections
-  let h='<section class="glass"><h2>🔬 Holdings evaluated</h2>';
+  let h='<section class="glass"><h2>Holdings evaluated</h2>';
   d.holdings.forEach((e,i)=>{const sym=e.sym.replace('.NS','').replace('.BO','');
     const vcls2=e.verdict==='Accumulate'?'v-under':(e.verdict==='Exit'||e.verdict==='Reduce')?'v-over':'v-fair';
     h+=`<div class="chip" style="margin-bottom:12px;background:#0c1426">
@@ -3066,13 +3155,13 @@ function renderEval(d){const o=el('t-eval-out');o.innerHTML='';
   d.holdings.forEach((e,i)=>{const sec=e.sector;if(!sec){el('peer-'+i).innerHTML='<span class="muted">No sector mapped.</span>';return;}
     loadPeerEval(sec,e.sym,e.fund_score,'peer-'+i,peerCache);});
   // sector mix + rotation + news
-  let sc='<section class="glass"><h2>🧭 Sector mix &amp; rotation</h2><div class="grid two"><div><h3>Your sector weights</h3>';
+  let sc='<section class="glass"><h2>Sector mix &amp; rotation</h2><div class="grid two"><div><h3>Your sector weights</h3>';
   sc+=d.sectors.map(s=>`<div class="kv">${s.sector}: <b>${s.pct}%</b>${s.pct>30?' <span class="neg">(concentrated)</span>':''}</div>`).join('');
   sc+='</div><div><h3>1-month sector leaders</h3>'+d.sector_rotation.slice(0,6).map(r=>`<div class="kv">${r.sector}: ${r.ret_1m_pct>=0?'<span class="pos">+'+r.ret_1m_pct+'%</span>':'<span class="neg">'+r.ret_1m_pct+'%</span>'}</div>`).join('')+'</div></div>';
   sc+=`<p class="muted">Largest sector ${d.concentration_pct}% of the book; keep any one under ~30% and rotate trims toward the leaders above.</p>`;
   if(d.sector_news&&Object.keys(d.sector_news).length){sc+='<h3>What\'s moving your sectors (news that can affect your horizon)</h3>';
     for(const[sec,news]of Object.entries(d.sector_news)){sc+=`<div style="margin-bottom:8px"><b>${sec}</b>`;
-      sc+=(news&&news.length)?news.map(n=>`<div class="flag ${n.tone=='neg'?'f-bad':n.tone=='pos'?'f-good':''}"><a href="${safeUrl(n.link)}" target="_blank" rel="noopener noreferrer">${esc(n.title)}</a> <small class="muted">${n.date}</small></div>`).join(''):'<div class="muted">No recent headlines.</div>';sc+='</div>';}}
+      sc+=(news&&news.length)?news.map(n=>`<div class="flag ${n.tone=='neg'?'f-bad':n.tone=='pos'?'f-good':''}"><a href="${safeUrl(n.link)}" target="_blank" rel="noopener noreferrer">${esc(n.title)}</a> <small class="muted">${esc(n.source||"")}${n.source?" · ":""}${n.date}</small></div>`).join(''):'<div class="muted">No recent headlines.</div>';sc+='</div>';}}
   o.append($(sc+'</section>'));}
 
 async function optimizePort(){const p=loadPort();if(p.length<1){el('t-opt-out').innerHTML='<section class="glass">Add holdings first.</section>';return;}
@@ -3085,14 +3174,14 @@ function renderOptimize(d){const m=d.mpt,r=d.risk,bm=d.benchmarks,o=el('t-opt-ou
   const hint=t=>t?`<span class="muted" style="display:block;font-size:11px">${t}</span>`:'';
   // dividend income
   const inc=d.income;
-  o.append($(`<section class="glass"><h2>💵 Dividend income from this portfolio</h2>
+  o.append($(`<section class="glass"><h2>Dividend income from this portfolio</h2>
     <div class="grid cards"><div class="chip">Est. annual dividend<b>₹${fmt(inc.annual_dividend)}</b></div>
     <div class="chip">Portfolio yield<b>${inc.portfolio_yield_pct}%</b>${hint(bm.dividend_yield)}</div>
     <div class="chip">Avg / month<b>₹${fmt(inc.monthly_avg)}</b></div></div>
     <table style="margin-top:8px"><tr><th>Stock</th><th>Yield</th><th>Annual ₹</th></tr>
     ${d.per_stock.map(s=>`<tr><td>${s.sym.replace('.NS','')}</td><td>${s.div_yield_pct}%</td><td>₹${fmt(s.annual_dividend)}</td></tr>`).join('')}</table>
     <p class="muted">${inc.note}</p></section>`));
-  o.append($(`<section class="glass"><h2>🧮 Portfolio optimization (Modern Portfolio Theory)</h2>
+  o.append($(`<section class="glass"><h2>Portfolio optimization (Modern Portfolio Theory)</h2>
     <div class="grid cards"><div class="chip">Portfolio value<b>₹${fmt(d.value)}</b></div>
     <div class="chip">${tip('Expected return')}<b>${m.expected_return_pct}%</b><span class="muted">annual, historical</span></div>
     <div class="chip">${tip('CAGR')}<b>${m.cagr_pct}%</b>${hint(bm.cagr)}</div>
@@ -3111,11 +3200,11 @@ function renderOptimize(d){const m=d.mpt,r=d.risk,bm=d.benchmarks,o=el('t-opt-ou
     <h3>Per-stock risk</h3><table><tr><th>Stock</th><th>Weight</th><th>Beta</th><th>Volatility</th><th>Downside dev</th><th>Max DD</th><th>Exp ret</th></tr>
     ${d.per_stock.map(s=>`<tr><td>${s.sym.replace('.NS','')}</td><td>${s.weight_pct}%</td><td>${s.beta??'—'}</td><td>${s.vol_pct}%</td><td>${s.downside_dev_pct??'—'}%</td><td>${s.max_drawdown_pct}%</td><td>${s.exp_return_pct}%</td></tr>`).join('')}</table>
     <h3>Sector concentration</h3>${r.top_sectors.map(s=>`<div class="kv">${s.sector}: <b>${s.pct}%</b></div>`).join('')}
-    ${window.AI_ON?`<hr style="border:0;border-top:1px solid var(--line);margin:12px 0"><button class="dl" id="ai-risk" style="margin:0">🧠 AI risk briefing (plain English)</button><div id="ai-risk-out" style="margin-top:8px"></div>`:''}</section>`));
+    ${window.AI_ON?`<hr style="border:0;border-top:1px solid var(--line);margin:12px 0"><button class="dl" id="ai-risk" style="margin:0">AI risk briefing (plain English)</button><div id="ai-risk-out" style="margin-top:8px"></div>`:''}</section>`));
   if(window.AI_ON&&el('ai-risk')){const rctx={mpt:d.mpt,risk:d.risk,factor_tilt:d.factor_tilt,value:d.value,monte_carlo:d.monte_carlo};
     el('ai-risk').onclick=()=>aiPost('/ai_analyst',{mode:'risk',context:rctx},'ai-risk-out','Briefing the risk…');}
   // backtest vs benchmark
-  o.append($(`<section class="glass"><h2>📈 Backtest — portfolio vs ${r.benchmark_name} <span class="muted">(growth of ₹1, 2y)</span></h2>
+  o.append($(`<section class="glass"><h2>Backtest — portfolio vs ${r.benchmark_name} <span class="muted">(growth of ₹1, 2y)</span></h2>
     <canvas id="cBT" height="130"></canvas><p class="muted">Benchmark annual return ${r.benchmark_return_pct}%. Past performance ≠ future results.</p></section>`));
   drawBT('cBT',d.backtest);
   // correlation matrix
@@ -3131,12 +3220,12 @@ function renderOptimize(d){const m=d.mpt,r=d.risk,bm=d.benchmarks,o=el('t-opt-ou
     <div class="chip">Volatility<b style="font-size:15px">${f.volatility}</b></div></div>
     <p class="muted">Weighted P/E ${f.wavg_pe??'—'}, P/B ${f.wavg_pb??'—'}. Descriptive tilt from holdings, not a regression factor model.</p></section>`));
   // stress test
-  let st='<section class="glass"><h2>🌪️ Stress test — "what if the market falls?"</h2><div class="grid cards">';
+  let st='<section class="glass"><h2>Stress test — "what if the market falls?"</h2><div class="grid cards">';
   for(const[k,v]of Object.entries(d.stress_test))st+=`<div class="chip">${k}<b class="neg">₹${fmt(Math.abs(v.expected_loss))} loss</b><span class="muted">value → ₹${fmt(v.value_after)}</span></div>`;
   o.append($(st+'</div><p class="muted">Expected loss = portfolio beta × index move × value. A 15% NIFTY fall hits a high-beta book harder.</p></section>'));
   // monte carlo + efficient frontier charts
   const mc=d.monte_carlo;
-  o.append($(`<section class="glass"><h2>🎲 Monte Carlo (1-year, 2000 sims) &amp; efficient frontier</h2>
+  o.append($(`<section class="glass"><h2>Monte Carlo (1-year, 2000 sims) &amp; efficient frontier</h2>
     <div class="grid cards"><div class="chip">Worst 5% (p5)<b>₹${fmt(mc.p5)}</b></div><div class="chip">Median (p50)<b>₹${fmt(mc.p50)}</b></div>
     <div class="chip">Best 5% (p95)<b>₹${fmt(mc.p95)}</b></div><div class="chip">Chance of loss<b>${mc.prob_loss_pct}%</b></div></div>
     <div class="grid two" style="margin-top:12px"><div><canvas id="cMC" height="170"></canvas><div class="muted" style="text-align:center">Simulated 1y outcomes</div></div>
@@ -3144,8 +3233,8 @@ function renderOptimize(d){const m=d.mpt,r=d.risk,bm=d.benchmarks,o=el('t-opt-ou
   drawMC('cMC',mc,d.value);drawEF('cEF',d.efficient_frontier);
   // rebalancing
   const ef=d.efficient_frontier.max_sharpe;
-  let rb=`<section class="glass"><h2>♻️ Rebalancing (quant — max-Sharpe target)</h2>
-    <p class="muted">This is the <b>mathematical</b> rebalance: it shifts weights toward the <b>max-Sharpe portfolio</b> — the mix with the best historical return per unit of risk (target: ${ef.ret}% return, ${ef.vol}% vol, Sharpe ${ef.sharpe}). Trades use ₹${fmt(d.value+(d.extra_capital||0))} (value${d.extra_capital?' + ₹'+fmt(d.extra_capital)+' extra':''}). For the <b>fundamentals-driven</b> "what to sell/add and why", see the 🎯 Evaluate &amp; rebalance section.</p>
+  let rb=`<section class="glass"><h2>Rebalancing (quant — max-Sharpe target)</h2>
+    <p class="muted">This is the <b>mathematical</b> rebalance: it shifts weights toward the <b>max-Sharpe portfolio</b> — the mix with the best historical return per unit of risk (target: ${ef.ret}% return, ${ef.vol}% vol, Sharpe ${ef.sharpe}). Trades use ₹${fmt(d.value+(d.extra_capital||0))} (value${d.extra_capital?' + ₹'+fmt(d.extra_capital)+' extra':''}). For the <b>fundamentals-driven</b> "what to sell/add and why", see the Evaluate &amp; rebalance section.</p>
     <table><tr><th>Stock</th><th>Current</th><th>Target</th><th>Action</th><th>Amount</th></tr>`;
   d.rebalance.forEach(x=>rb+=`<tr><td>${x.sym.replace('.NS','')}</td><td>${x.current_pct}%</td><td>${x.target_pct}%</td><td>${x.action==='Buy'?'<span class="pos">Buy</span>':'<span class="neg">Trim</span>'}</td><td>₹${fmt(x.amount)}</td></tr>`);
   o.append($(rb+`</table><table style="margin-top:10px"><tr><th>Benchmark</th><th>This portfolio</th><th>Healthy range</th></tr>
@@ -3158,8 +3247,8 @@ function renderOptimize(d){const m=d.mpt,r=d.risk,bm=d.benchmarks,o=el('t-opt-ou
 
 async function loadPortNews(){const p=loadPort();if(!p.length){el('t-news').innerHTML='';return;}
   const news=await(await fetch('/portfolio_news?tickers='+encodeURIComponent(p.map(h=>h.sym).join(',')))).json();
-  let h='<section class="glass"><h2>📰 Portfolio news (live)</h2><div class="news">';
-  h+=Array.isArray(news)&&news.length?news.map(n=>`<div class="flag ${n.tone=='neg'?'f-bad':n.tone=='pos'?'f-good':''}"><span class="tag">${esc(n.ticker)}</span> <a href="${safeUrl(n.link)}" target="_blank" rel="noopener noreferrer">${esc(n.title)}</a> <small class="muted">${n.date}</small></div>`).join(''):'<div class="muted">No headlines.</div>';
+  let h='<section class="glass"><h2>Portfolio news (live)</h2><div class="news">';
+  h+=Array.isArray(news)&&news.length?news.map(n=>`<div class="flag ${n.tone=='neg'?'f-bad':n.tone=='pos'?'f-good':''}"><span class="tag">${esc(n.ticker)}</span> <a href="${safeUrl(n.link)}" target="_blank" rel="noopener noreferrer">${esc(n.title)}</a> <small class="muted">${esc(n.source||"")}${n.source?" · ":""}${n.date}</small></div>`).join(''):'<div class="muted">No headlines.</div>';
   el('t-news').innerHTML=h+'</div><p class="muted">Live Google News for each holding (14d). Read the source.</p></section>';}
 function drawMC(id,mc,value){const bins=[mc.p5,mc.p50,mc.p95];charts.push(new Chart(el(id),{type:'bar',
   data:{labels:['Worst 5%','Median','Best 5%'],datasets:[{label:'Ending value ₹',data:bins,backgroundColor:['#ff6b6b','#ffd166','#39d98a']}]},
@@ -3213,9 +3302,9 @@ async function renderMarkets(){el('m-markets').innerHTML='<div class="spin"></di
   const d=await(await fetch('/dashboard')).json();
   const chg=v=>v==null?'—':(v.change_pct>=0?`<span class="pos">${fmt(v.price)} (+${v.change_pct}%)</span>`:`<span class="neg">${fmt(v.price)} (${v.change_pct}%)</span>`);
   const grid=obj=>Object.entries(obj).map(([k,v])=>`<div class="chip">${k}<b style="font-size:16px">${chg(v)}</b></div>`).join('');
-  let h=`<section class="glass"><h2>🌐 Market dashboard</h2><div class="grid cards">${grid(d.market)}</div>
+  let h=`<section class="glass"><h2>Market dashboard</h2><div class="grid cards">${grid(d.market)}</div>
     <h3>Commodities · rates · currency</h3><div class="grid cards">${grid(d.macro)}</div></section>`;
-  h+=`<section class="glass"><h2>🔄 Sector rotation <span class="muted">(1-month return, leaders first)</span></h2><table><tr><th>Sector</th><th>1M return</th></tr>`;
+  h+=`<section class="glass"><h2>Sector rotation <span class="muted">(1-month return, leaders first)</span></h2><table><tr><th>Sector</th><th>1M return</th></tr>`;
   d.sector_rotation.forEach(s=>h+=`<tr><td>${s.sector}</td><td>${s.ret_1m_pct>=0?'<span class="pos">+'+s.ret_1m_pct+'%</span>':'<span class="neg">'+s.ret_1m_pct+'%</span>'}</td></tr>`);
   h+='</table></section>';
   h+='<section class="glass"><h2>🏦 US macro (FRED)</h2>';
@@ -3226,7 +3315,7 @@ async function renderMarkets(){el('m-markets').innerHTML='<div class="spin"></di
 
 // ---- watchlists ----
 async function renderWatch(){const lists=['Buffett (quality)','High ROE (ROCE proxy)','Deep Value','Small-cap compounders'];
-  el('m-watch').innerHTML=`<div id="ww-watch"></div><section class="glass"><h2>📚 Curated screens</h2><p class="muted">Pre-built pools screened live and ranked. Click one to load (takes a few seconds — it fetches fundamentals).</p>
+  el('m-watch').innerHTML=`<div id="ww-watch"></div><section class="glass"><h2>Curated screens</h2><p class="muted">Pre-built pools screened live and ranked. Click one to load (takes a few seconds — it fetches fundamentals).</p>
     <div>${lists.map(n=>`<button class="wlbtn" data-n="${n}" style="margin:4px;background:#0e1422;color:var(--acc);border:1px solid var(--line)">${n}</button>`).join('')}</div><div id="wl-out"></div></section>`;
   renderMyWatch(el('ww-watch'),'ww_');
   el('m-watch').querySelectorAll('.wlbtn').forEach(b=>b.onclick=async()=>{el('wl-out').innerHTML='<div class="spin"></div>';
