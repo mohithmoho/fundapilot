@@ -2788,7 +2788,7 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
     <div style="margin-top:10px">
       ${(d.officers&&d.officers.length)?`<h3 style="margin-top:0">Key people</h3><table><tr><th>Name</th><th>Title</th><th>Age</th><th>Pay</th></tr>${d.officers.map(o=>`<tr><td>${esc(o.name||'')}</td><td>${esc(o.title||'')}</td><td>${o.age||'—'}</td><td>${o.pay?cur+fmt(o.pay):'—'}</td></tr>`).join('')}</table>`:'<p class="muted">Management roster not in the data feed — use the primary sources below.</p>'}
       <p class="muted" style="margin-top:8px">Primary sources: ${(d.references||[]).map(r=>`<a href="${safeUrl(r.url)}" target="_blank" rel="noopener noreferrer">${esc(r.label.split(' —')[0].split(' (')[0])}</a>`).join(' · ')}</p>
-      ${window.AI_ON?`<button class="dl" id="ai-mda">Generate management discussion &amp; analysis (MD&amp;A)</button><div id="ai-mda-out" style="margin-top:8px"></div>`:'<p class="muted">Enable the AI analyst to auto-write an MD&A here so you needn\\'t read the full annual report.</p>'}
+      ${window.AI_ON?`<button class="dl" id="ai-mda">Generate management discussion &amp; analysis (MD&amp;A)</button><div id="ai-mda-out" style="margin-top:8px"></div>`:'<p class="muted">Enable the AI analyst to auto-write an MD&A here so you need not read the full annual report.</p>'}
     </div></details></section>`));
   if(window.AI_ON&&el('ai-mda'))el('ai-mda').onclick=()=>aiPost('/ai_analyst',{mode:'mda',context:aiContext(d)},'ai-mda-out','Writing the MD&A…');
 
