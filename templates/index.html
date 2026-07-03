@@ -1,0 +1,67 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>FundaPilot — institutional-grade equity research & portfolio optimization</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<!--SBCFG-->
+<link rel="stylesheet" href="/static/style.css"></head><body>
+<div id="authbar"></div>
+<header>
+  <div style="display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap">
+    <svg width="64" height="64" viewBox="0 0 100 100" aria-label="FundaPilot logo">
+      <circle cx="52" cy="44" r="33" fill="none" stroke="#9ec5ff" stroke-width="4"/>
+      <rect x="34" y="48" width="8" height="16" rx="1.5" fill="#39d98a"/>
+      <rect x="46" y="40" width="8" height="24" rx="1.5" fill="#39d98a"/>
+      <rect x="58" y="30" width="8" height="34" rx="1.5" fill="#39d98a"/>
+      <path d="M32 56 L48 44 L60 50 L78 26" fill="none" stroke="#39d98a" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M72 24 L80 24 L80 32" fill="none" stroke="#39d98a" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M20 70 h34 M24 78 h26" stroke="#9ec5ff" stroke-width="4" stroke-linecap="round"/>
+      <text x="48" y="92" font-family="system-ui,Segoe UI" font-size="34" font-weight="800" fill="#9ec5ff">P</text>
+    </svg>
+    <div style="text-align:left">
+      <h1 style="margin:0">Funda<span style="background:none;-webkit-text-fill-color:#39d98a;color:#39d98a">Pilot</span></h1>
+      <div class="sub" style="letter-spacing:2px;font-weight:600">ANALYZE · VALUE · OPTIMIZE</div>
+    </div>
+  </div>
+  <div class="sub" style="margin-top:6px">Institutional-grade equity research &amp; portfolio optimization · AI-powered valuation &amp; portfolio analytics · educational only · Indian &amp; global</div>
+</header>
+<div class="wrap">
+<div class="glass" style="padding:18px">
+  <div class="tabs">
+    <div class="tab on" data-tab="search">Company</div>
+    <div class="tab" data-tab="explore">Explore by sector</div>
+    <div class="tab" data-tab="models">Model portfolios</div>
+    <div class="tab" data-tab="track">My portfolio (live)</div>
+    <div class="tab" data-tab="markets">Markets</div>
+    <div class="tab" data-tab="watch">⭐ Watchlists</div>
+    <div class="tab" data-tab="me" id="metab" style="display:none">My space</div>
+  </div>
+  <div id="m-search" class="panel">
+    <div class="full ac"><label>Company / ticker</label><input id="ticker" placeholder="Type e.g. Reliance, HAL, Apple…" autocomplete="off">
+      <div class="acbox" id="acbox"></div><div class="hint">Pick a suggestion, or type a symbol. NSE adds .NS automatically.</div>
+      <div id="quoteprev" style="margin-top:6px;font-size:14px"></div></div>
+    <div><label>Market</label><select id="market"><option>NSE</option><option>BSE</option><option>Global</option></select></div>
+  </div>
+  <div id="m-explore" class="panel" style="display:none">
+    <div><label>Country / group</label><select id="ex-country"></select></div>
+    <div><label>Sector / category</label><select id="ex-sector"></select></div>
+    <div><label>Company</label><select id="ex-company"></select></div>
+  </div>
+  <div id="m-models" style="display:none"></div>
+  <div id="m-track" style="display:none"></div>
+  <div id="m-markets" style="display:none"></div>
+  <div id="m-watch" style="display:none"></div>
+  <div id="m-me" style="display:none"></div>
+  <div id="filters" class="panel" style="margin-top:14px">
+    <div><label>Time horizon</label><select id="horizon"><option value="short">Short (≤3y)</option><option value="medium" selected>Medium (3–7y)</option><option value="long">Long (7y+)</option></select></div>
+    <div><label>Risk appetite</label><select id="risk"><option value="conservative">Conservative</option><option value="medium" selected>Medium</option><option value="aggressive">Aggressive</option></select></div>
+    <div><label>Investing style</label><select id="style"><option value="balanced">Balanced</option><option value="buffett">Warren Buffett</option><option value="growth">Growth (Lynch)</option><option value="value">Deep Value</option><option value="dividend">Dividend/Defensive</option><option value="momentum">Momentum</option></select></div>
+    <div><label>Capital (₹)</label><input id="capital" type="number" value="100000" min="0"></div>
+    <div><label>Years of statements</label><input id="years" type="number" value="5" min="1" max="10"></div>
+    <button id="go" class="full">Analyze</button>
+  </div>
+</div>
+<div id="out"></div>
+</div>
+<div class="disc">⚠️ Educational use only. Not investment advice. Data: Yahoo Finance + Google News. Verify before any decision.</div>
+<div class="creator">creator: mohith</div>
+<script src="/static/app.js"></script></body></html>
