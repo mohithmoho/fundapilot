@@ -2858,6 +2858,18 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
       <div class="chip">DCF fair value<b>${money(cur,val.fair_value_mktcap,null)}</b><span class="muted">${val.dcf_verdict}</span></div>
       <div class="chip">Margin of safety<b>${val.margin_of_safety_pct==null?'—':val.margin_of_safety_pct+'%'}</b></div>
       <div class="chip">Reverse-DCF implied growth<b>${val.implied_growth_pct==null?'—':val.implied_growth_pct+'%'}</b><span class="muted">priced-in</span></div></div>
+    <p class="muted" style="margin-top:6px">Assumptions used → FCF ${money(cur,val.fcf,null)} (${val.fcf_source||'n/a'}) · growth <b>${val.growth_used_pct}%/yr</b> · <b>discount rate ${val.discount_pct}%</b> (set by your Risk appetite: conservative 13% · medium 12% · aggressive 11%) · terminal growth <b>3%</b> · horizon <b>${val.proj_years} years</b>. Both DCF and reverse-DCF use this same discount rate.</p>
+    <details style="margin-top:6px"><summary class="muted" style="cursor:pointer;font-weight:600">Adjust assumptions &amp; recompute — use your own numbers</summary>
+      <div class="panel" style="margin-top:10px">
+        <div><label>Growth %/yr <span class="tip" data-tip="How fast you believe free cash flow will grow each year over the horizon.">i</span></label><input id="dcf-g" type="number" step="0.5" value="${val.growth_used_pct}"></div>
+        <div><label>Discount rate % <span class="tip" data-tip="Your required annual return (cost of capital). Higher discount = lower fair value. India equity: typically 11-14%.">i</span></label><input id="dcf-r" type="number" step="0.5" value="${val.discount_pct}"></div>
+        <div><label>Terminal growth % <span class="tip" data-tip="Growth forever after the horizon. Keep at/below long-run nominal GDP (~3-5%); must be below the discount rate.">i</span></label><input id="dcf-tg" type="number" step="0.5" value="3"></div>
+        <div><label>Years <span class="tip" data-tip="How many years of explicit FCF projection before the terminal value.">i</span></label><input id="dcf-y" type="number" min="1" max="30" value="${val.proj_years}"></div>
+        <div><label>Free cash flow (${cur}) <span class="tip" data-tip="Starting annual FCF in absolute currency units. Override it if you disagree with the reported figure.">i</span></label><input id="dcf-fcf" type="number" value="${val.fcf==null?'':Math.round(val.fcf)}"></div>
+        <button id="dcf-reset" style="background:#0e1422;color:var(--acc);border:1px solid var(--line)">Reset to defaults</button>
+      </div>
+      <div id="dcf-custom-out" style="margin-top:8px"><p class="muted">Change any value above — the fair value, margin of safety, verdict and reverse-DCF recompute instantly.</p></div>
+    </details>
     ${val.scenarios&&Object.keys(val.scenarios).length?`<h3>Scenario DCF — bear / base / bull range</h3><div class="grid cards">
       ${Object.entries(val.scenarios).map(([k,s])=>`<div class="chip">${k}<b>${money(cur,s.fair_value,null)}</b><span class="muted">${s.mos_pct>=0?'+':''}${s.mos_pct}% · g ${s.growth_pct}%, disc ${s.discount_pct}%</span></div>`).join('')}</div>
       <p class="muted">A value range, not a single point — the honest way to quote intrinsic value.</p>`:''}
@@ -2865,6 +2877,29 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
     <div id="indpe" class="muted">Loading industry P/E…</div>
     <p class="muted" style="margin-top:8px">FCF used ${money(cur,val.fcf,null)} (${val.fcf_source||'n/a'}). A high P/E isn't automatically "overvalued" — if growth, quality and the global industry support it, paying up can be justified.</p></section>`));
   loadIndustryPE(d.ticker,d.sector);
+
+  // user-adjustable DCF: recompute fair value / MoS / verdict / reverse-DCF live, client-side (same math as the backend)
+  const dcfDef={g:val.growth_used_pct,r:val.discount_pct,tg:3,y:val.proj_years,fcf:val.fcf==null?'':Math.round(val.fcf)};
+  function dcfJS(fcf,g,r,years,tg){if(!fcf||fcf<=0||r<=tg)return null;let pv=0,cf=fcf;for(let t=1;t<=years;t++){cf*=1+g;pv+=cf/Math.pow(1+r,t);}return pv+(cf*(1+tg)/(r-tg))/Math.pow(1+r,years);}
+  function revDcfJS(fcf,mktcap,r,years,tg){if(!fcf||fcf<=0||!mktcap||r<=tg)return null;let lo=-0.10,hi=0.50;for(let i=0;i<60;i++){const mid=(lo+hi)/2;const v=dcfJS(fcf,mid,r,years,tg);if(v==null)return null;if(v<mktcap)lo=mid;else hi=mid;}return Math.round((lo+hi)/2*1000)/10;}
+  function recomputeDCF(){const box=el('dcf-custom-out');if(!box)return;
+    const g=(+el('dcf-g').value||0)/100,r=(+el('dcf-r').value||0)/100,tg=(+el('dcf-tg').value||0)/100;
+    const y=Math.max(1,Math.min(30,Math.round(+el('dcf-y').value||8)));
+    const fcf=+el('dcf-fcf').value||null;
+    if(!fcf||fcf<=0){box.innerHTML='<p class="muted">A DCF needs a positive free cash flow — enter one above to recompute.</p>';return;}
+    if(r<=tg){box.innerHTML='<p class="muted">Discount rate must be HIGHER than terminal growth (else the terminal value is infinite). Raise the discount rate or lower terminal growth.</p>';return;}
+    const fair=dcfJS(fcf,g,r,y,tg),mc=val.current_mktcap;
+    const mos=(fair&&mc)?Math.round((fair/mc-1)*1000)/10:null;
+    const verdict=mos==null?'—':(mos>20?'Undervalued':(mos<-20?'Overvalued':'Fairly valued'));
+    const ig=revDcfJS(fcf,mc,r,y,tg);
+    box.innerHTML=`<div class="grid cards">
+      <div class="chip">Your fair value<b>${money(cur,fair,null)}</b><span class="muted">vs mkt cap ${money(cur,mc,null)}</span></div>
+      <div class="chip">Your margin of safety<b>${mos==null?'—':mos+'%'}</b></div>
+      <div class="chip">Your verdict<b><span class="verdict ${vcls(verdict)}">${verdict}</span></b></div>
+      <div class="chip">Implied growth at your discount<b>${ig==null?'—':ig+'%'}</b><span class="muted">priced-in</span></div></div>
+      <p class="muted">Live with YOUR inputs: fair value = Σ FCF×(1+g)^t ÷ (1+r)^t for t=1..${y}, plus terminal FCF×(1+g∞) ÷ (r−g∞) discounted back. The rest of the report still uses the default assumptions shown above.</p>`;}
+  ['dcf-g','dcf-r','dcf-tg','dcf-y','dcf-fcf'].forEach(id=>{if(el(id))el(id).oninput=recomputeDCF;});
+  if(el('dcf-reset'))el('dcf-reset').onclick=()=>{el('dcf-g').value=dcfDef.g;el('dcf-r').value=dcfDef.r;el('dcf-tg').value=dcfDef.tg;el('dcf-y').value=dcfDef.y;el('dcf-fcf').value=dcfDef.fcf;recomputeDCF();};
 
   let rt='<section class="glass"><h2>Ratio analysis <span class="muted">— hover for the definition'+(window.AI_ON?'; click for an AI explanation for THIS company':'')+'</span></h2><table><tr><th>Metric</th><th>Value</th><th style="text-align:left">What it means · benchmark</th></tr>';
   for(const[k,o]of Object.entries(d.ratios)){const u=o.unit||'';
