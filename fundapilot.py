@@ -2098,12 +2098,16 @@ def quote():
 @app.route("/optimize", methods=["POST"])
 def optimize():
     d = request.get_json(force=True)
-    holdings = [{"sym": clean_ticker(h.get("sym")), "qty": float(h.get("qty") or 0), "buy": float(h.get("buy") or 0)}
-                for h in d.get("holdings", []) if h.get("sym")]
+    try:
+        holdings = [{"sym": clean_ticker(h.get("sym")), "qty": float(h.get("qty") or 0), "buy": float(h.get("buy") or 0)}
+                    for h in d.get("holdings", []) if h.get("sym")]
+        extra = float(d.get("extra_capital") or 0)
+    except (ValueError, TypeError):
+        return jresp({"error": "Quantity, buy price and extra capital must be numbers."}, 400)
     if not holdings:
         return jresp({"error": "Add at least one holding."}, 400)
     try:
-        return jresp(portfolio_analytics(holdings, float(d.get("extra_capital") or 0)))
+        return jresp(portfolio_analytics(holdings, extra))
     except Exception as e:
         return jresp({"error": f"Optimization failed: {e}"}, 500)
 
@@ -2123,12 +2127,16 @@ def peer_eval_route():
 @app.route("/portfolio_eval", methods=["POST"])
 def portfolio_eval_route():
     d = request.get_json(force=True)
-    holdings = [{"sym": clean_ticker(h.get("sym")), "qty": float(h.get("qty") or 0), "buy": float(h.get("buy") or 0)}
-                for h in d.get("holdings", []) if h.get("sym")]
+    try:
+        holdings = [{"sym": clean_ticker(h.get("sym")), "qty": float(h.get("qty") or 0), "buy": float(h.get("buy") or 0)}
+                    for h in d.get("holdings", []) if h.get("sym")]
+        extra = float(d.get("extra_capital") or 0)
+    except (ValueError, TypeError):
+        return jresp({"error": "Quantity, buy price and extra capital must be numbers."}, 400)
     if not holdings:
         return jresp({"error": "Add at least one holding."}, 400)
     try:
-        return jresp(portfolio_eval(holdings, d.get("horizon", "medium"), float(d.get("extra_capital") or 0)))
+        return jresp(portfolio_eval(holdings, d.get("horizon", "medium"), extra))
     except Exception as e:
         return jresp({"error": f"Evaluation failed: {e}"}, 500)
 
