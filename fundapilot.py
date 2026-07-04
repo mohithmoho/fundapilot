@@ -2261,8 +2261,13 @@ def do_analyze():
     if market in ("NSE", "BSE") and not sym.endswith((".NS", ".BO")):
         sym += ".NS" if market == "NSE" else ".BO"
     try:
+        capital = float(d.get("capital") or 0)
+        years = int(d.get("years") or 5)
+    except (ValueError, TypeError):
+        return jresp({"error": "Capital and years must be numbers."}, 400)
+    try:
         return jresp(analyze(sym, d.get("horizon", "medium"), d.get("risk", "medium"),
-                             float(d.get("capital") or 0), int(d.get("years") or 5), d.get("style", "balanced")))
+                             capital, years, d.get("style", "balanced")))
     except Exception as e:
         return jresp({"error": f"Analysis failed for {sym}: {e}"}, 500)
 
