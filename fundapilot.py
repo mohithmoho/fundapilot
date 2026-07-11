@@ -709,7 +709,9 @@ def fetch(ticker, years):
     # fill any missing info fields from statements/fast_info — never overwrite a real Yahoo value
     computed = _compute_fundamentals(fin, bs, cf, fast, price, beta)
     if div_dec is not None:
-        computed["dividendYield"] = div_dec
+        # inject into the DECIMAL field — div_yield_dec returns trailingAnnualDividendYield as-is
+        # (it divides the separate `dividendYield` field by 100, so injecting there is 100x too small)
+        computed["trailingAnnualDividendYield"] = div_dec
     filled = []
     for k, v in computed.items():
         if _g(info, k) is None and v is not None:
@@ -1604,8 +1606,12 @@ def technical_analysis(ticker, tf="daily"):
              "bb_lo": [None if pd.isna(x) else round(float(x), 2) for x in bb_lo.tail(tailN)],
              "base": len(c) - min(len(c), tailN)}  # to map pattern indices into the tail
     # net read
-    bull = sum(1 for v in indicators.values() if "ullish" in v["signal"] or "Oversold" in v["signal"] or "Uptrend" in v["signal"] or "Positive" in v["signal"] or "up" in v["signal"])
-    bear = sum(1 for v in indicators.values() if "earish" in v["signal"] or "Overbought" in v["signal"] or "Downtrend" in v["signal"] or "Negative" in v["signal"] or "down" in v["signal"])
+    # mirror the JS coloring at render time: anchored up$/down$ (not bare "up", which mis-catches
+    # "At upper band" as bullish) and explicit lower/upper band → bull/bear
+    _bull_re = re.compile(r"ullish|Oversold|Uptrend|Positive|up$|lower band|rising", re.I)
+    _bear_re = re.compile(r"earish|Overbought|Downtrend|Negative|down$|upper band|falling", re.I)
+    bull = sum(1 for v in indicators.values() if _bull_re.search(v["signal"]))
+    bear = sum(1 for v in indicators.values() if _bear_re.search(v["signal"]))
     bias = "Bullish" if bull > bear + 1 else ("Bearish" if bear > bull + 1 else "Mixed / Neutral")
     return {"tf": tf, "price": last, "indicators": indicators, "patterns": patterns,
             "chart": chart, "net_bias": bias, "bull_count": bull, "bear_count": bear,
@@ -2281,6 +2287,12 @@ def _selftest():
     assert score(20, 12, 45) > 5
     assert rate_metric("ROE %", 20)["rating"] == "good" and rate_metric("P/E (trailing)", 60)["rating"] == "poor"
     assert cap_category(30000 * 1e7) == "Large cap" and cap_category(100 * 1e7) == "Small cap"
+    # dividend yield: decimal field returned as-is, percent field /100 (fetch() must inject the
+    # dividends-feed yield into trailingAnnualDividendYield, else it reads 100x too small on cloud)
+    assert div_yield_dec({"trailingAnnualDividendYield": 0.006}) == 0.006
+    assert abs(div_yield_dec({"dividendYield": 0.6}) - 0.006) < 1e-9
+    # net-bias signal classification: "At upper band" is bearish, "At lower band" bullish (not bare "up")
+    assert re.search(r"upper band", "At upper band", re.I) and not re.search(r"up$", "At upper band")
     f, src, det = derive_fcf({"freeCashflow": 500}, None)
     assert f == 500
     p, sec = find_peers("HAL.NS", "Aerospace & Defense")
