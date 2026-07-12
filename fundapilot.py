@@ -279,6 +279,14 @@ def reverse_dcf(fcf, mktcap, discount, years):
     return round((lo + hi) / 2 * 100, 1)
 
 
+def graham_number(price, pe, pb):
+    """Graham number = sqrt(22.5 x EPS x BVPS). With EPS = price/PE and BVPS = price/PB this
+    reduces to price x sqrt(22.5 / (PE x PB)) — equals price exactly when PE x PB = 22.5."""
+    if not (price and pe and pb) or pe <= 0 or pb <= 0:
+        return None
+    return round(price * math.sqrt(22.5 / (pe * pb)), 2)
+
+
 def score(value, good, bad):
     if value is None:
         return None
@@ -1182,6 +1190,9 @@ def analyze(ticker, horizon, risk, capital, years, style):
     fcf, fcf_src, fcf_detail = derive_fcf(info, t)
     inst = institutional_metrics(fin, bs, cf, mktcap, ebitda, fcf)  # ROCE, ROIC, EV/EBITDA, Z, F-score...
     g = max(0.03, min(0.18, (earn_g or rev_g or 0.08)))
+    growth_source = ("trailing 1-yr earnings growth" if earn_g else
+                     "trailing 1-yr revenue growth (no earnings-growth data)" if rev_g else
+                     "8% default (no growth data)")
     fair = dcf(fcf, g, rp["discount"], proj_years)
     implied_g = reverse_dcf(fcf, mktcap, rp["discount"], proj_years)
     dcf_verdict, mos = "Insufficient data", None
@@ -1324,6 +1335,9 @@ def analyze(ticker, horizon, risk, capital, years, style):
                           "pe_growth_verdict": pe_growth_verdict, "peg": peg,
                           "combined_reason": " · ".join(reasons),
                           "scenarios": scenarios,
+                          "growth_source": growth_source,
+                          "graham_value": graham_number(price, pe, pb),
+                          "lynch_fair_mktcap": round(mktcap * fair_pe / pe) if (mktcap and fair_pe and pe) else None,
                           "method_note": "Combined verdict blends DCF, growth-adjusted fair P/E and PEG — not just P/E & P/B. A high P/E can still be 'fair' if growth/quality justify paying up for the future."},
             "quality": {"piotroski": inst.get("Piotroski F"), "piotroski_max": inst.get("_piotroski_max"),
                         "altman_z": inst.get("Altman Z"), "roce": inst.get("ROCE %"), "roic": inst.get("ROIC %"),
@@ -2351,6 +2365,10 @@ def _selftest():
     assert im["EV/EBITDA"] > 0 and im["ROCE %"] > 0 and im["FCF yield %"] > 0
     assert im["Altman Z"] > 0 and 0 <= im["Piotroski F"] <= im["_piotroski_max"] <= 9
     assert im["Revenue CAGR 3y %"] > 0
+    # Graham number: PE x PB = 22.5 must return exactly the price (textbook identity)
+    assert graham_number(100, 15, 1.5) == 100.0
+    assert graham_number(100, 30, 3.0) == 50.0      # 22.5/90 = 0.25 -> sqrt = 0.5
+    assert graham_number(100, 0, 1) is None and graham_number(None, 15, 1.5) is None
     # validate the inlined browser JS — a single JS syntax error breaks the whole UI.
     # Uses node if available; skips gracefully otherwise.
     import shutil, subprocess, tempfile
@@ -2480,6 +2498,41 @@ details summary{cursor:pointer;color:var(--mut);font-size:13px}.disc{font-size:1
   </div>
 </div>
 <div id="out"></div>
+
+<section class="glass" style="margin-top:18px;padding:18px">
+  <h2>About this project — FAQ</h2>
+  <p class="muted">Common questions from users, reviewers and recruiters — with straight answers about how FundaPilot actually works under the hood.</p>
+
+  <details><summary style="cursor:pointer;font-weight:600">What growth metric does the DCF use?</summary>
+    <p class="muted">Trailing 1-year <b>earnings growth</b>; if unavailable, 1-year <b>revenue growth</b>; if neither, an 8% default. The rate is <b>clamped to 3–18%</b> so one unusual year cannot distort a 8–10-year projection. The exact metric and value used are shown per stock in "Valuation methodology" after every analysis, and you can override every input in "Adjust assumptions" and watch fair value recompute live.</p></details>
+
+  <details><summary style="cursor:pointer;font-weight:600">Where does the discount rate come from?</summary>
+    <p class="muted">From the user's <b>Risk appetite</b> setting: conservative 13%, medium 12%, aggressive 11% — a practical proxy for cost of equity in Indian equities (risk-free ~6.5% + equity risk premium). DCF and reverse-DCF share the same rate so their answers are directly comparable, and it is user-overridable.</p></details>
+
+  <details><summary style="cursor:pointer;font-weight:600">Which valuation techniques are implemented?</summary>
+    <p class="muted">Seven, shown side by side: <b>DCF</b> (single-stage FCF + terminal value), <b>reverse DCF</b> (binary-searches the growth the current price implies), <b>scenario DCF</b> (bear/base/bull range), <b>growth-adjusted fair P/E</b> (Lynch-style: 8 + 0.9×growth with quality premia), <b>PEG</b>, <b>Graham number</b> (√(22.5×EPS×BVPS)) and <b>relative peer P/E</b> (re-pricing earnings at the sector median). The headline verdict deliberately blends three lenses (DCF + fair-P/E + PEG) so no single model dominates.</p></details>
+
+  <details><summary style="cursor:pointer;font-weight:600">Is the data real? What happens when it's missing?</summary>
+    <p class="muted">All numbers come from real filed financial statements and market data (via yfinance) plus Google News RSS — nothing is fabricated. When Yahoo's ratio feed is unavailable (common on cloud IPs), ratios are <b>recomputed from the raw income statement and balance sheet</b>. If a core metric genuinely cannot be computed, the stock is marked <b>"Not rated"</b> instead of guessing — and loss-making companies are hard-capped so they can never score "fundamentally strong".</p></details>
+
+  <details><summary style="cursor:pointer;font-weight:600">How is the health score built?</summary>
+    <p class="muted"><b>60% fundamentals + 40% technicals.</b> Fundamentals: ROE, ROCE, debt/equity, net margin, P/B, growth and P/E each mapped to 0–10 against published benchmark ranges; rated only when the full core set is present. Technicals: 200-DMA trend, 50/200 cross, RSI(14) and 6-month relative strength vs the index. Thresholds are visible next to every metric in the app.</p></details>
+
+  <details><summary style="cursor:pointer;font-weight:600">What's behind the portfolio analytics?</summary>
+    <p class="muted">Standard quant methods on 2 years of daily returns: <b>Sharpe/Sortino</b> (rf 6.5%), <b>Jensen's alpha and beta</b> vs NIFTY, <b>historical 1-day 95% VaR and CVaR</b>, max drawdown, correlation matrix, a <b>2,000-path Monte Carlo</b> one-year simulation, and an <b>efficient frontier</b> sampled from 3,000 random weightings with a max-Sharpe rebalancing target. Stop-loss/target levels use ATR(14): SL = price − 2×ATR, TP = price + 3×ATR (~1.5 reward:risk).</p></details>
+
+  <details><summary style="cursor:pointer;font-weight:600">What does the AI layer do — and how do you stop hallucination?</summary>
+    <p class="muted">The AI reasons <b>only over the numbers the deterministic engine computed</b> — the prompt forbids inventing figures, keeps it strictly on-topic, and every output carries a disclaimer. It is optional (the tool is fully deterministic without it), provider-agnostic (Groq/Claude/any OpenAI-compatible), rate-limited per-IP and per-day, and it keeps a <b>lessons journal</b>: it scores its past calls against real prices and feeds the distilled lessons into future decisions.</p></details>
+
+  <details><summary style="cursor:pointer;font-weight:600">What's the tech stack and architecture?</summary>
+    <p class="muted">A deliberately lean single-file <b>Flask</b> app (~2,400 lines Python + inlined UI with Chart.js), free data (yfinance + Google News), <b>Supabase</b> for Google-OAuth login and per-user watchlists/journals with row-level security, deployed on <b>Render</b> with push-to-deploy CI. A selftest guards the maths (DCF identities, Graham number, RSI edge cases, scoring) and even <b>node-checks the frontend JS</b> before any release.</p></details>
+
+  <details><summary style="cursor:pointer;font-weight:600">How is it secured?</summary>
+    <p class="muted">No secrets in the repo (env vars only), API keys never reach the browser, per-IP rate limiting plus a daily AI cap, ticker input whitelisting, XSS-escaping of all external text, http(s)-only links, security headers, and Supabase RLS so each user can only read their own rows. The backend holds no database of its own — no SQL-injection surface.</p></details>
+
+  <details><summary style="cursor:pointer;font-weight:600">What are the known limitations?</summary>
+    <p class="muted">Educational tool, not investment advice. Free data has gaps (no product-segment revenue, no forward analyst estimates — deliberately not faked). Expected returns are historical, not forecasts. Statement-derived ratios can differ slightly from TTM figures. Chart-pattern detection is heuristic and labelled with confidence. Every limitation is disclosed in-app rather than hidden.</p></details>
+</section>
 </div>
 <div class="disc">⚠️ Educational use only. Not investment advice. Data: Yahoo Finance + Google News. Verify before any decision.</div>
 <div class="creator">creator: mohith</div>
@@ -2895,6 +2948,33 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
     <p class="muted" style="margin-top:8px">FCF used ${money(cur,val.fcf,null)} (${val.fcf_source||'n/a'}). A high P/E isn't automatically "overvalued" — if growth, quality and the global industry support it, paying up can be justified.</p></section>`));
   loadIndustryPE(d.ticker,d.sector);
 
+  // Valuation methodology — every metric/assumption used + all techniques side by side (collapsible)
+  const gvv=val.graham_value, gvPct=(gvv&&d.price)?Math.round((gvv/d.price-1)*1000)/10:null;
+  const gvVerdict=gvPct==null?'—':(gvPct>20?'Undervalued':(gvPct<-20?'Overvalued':'Fairly valued'));
+  const lynchFV=val.lynch_fair_mktcap;
+  const revRead=(val.implied_growth_pct==null||val.growth_used_pct==null)?'—':
+    (val.implied_growth_pct>val.growth_used_pct?'Market is pricing MORE growth than assumed — expectations are demanding':'Market is pricing LESS growth than assumed — modest expectations');
+  const pegRead=val.peg==null?'—':(val.peg<1?'Cheap for its growth':(val.peg>2?'Expensive for its growth':'Fairly priced for its growth'));
+  out.append($(`<section class="glass"><details><summary style="font-size:18px;font-weight:600;cursor:pointer">Valuation methodology — metrics used &amp; alternative techniques <span class="muted" style="font-weight:400">(click to expand)</span></summary>
+    <div style="margin-top:10px">
+    <h3 style="margin-top:0">Exact inputs used</h3>
+    <div class="kv">Growth metric: <b>${esc(val.growth_source||'n/a')}</b> = <b>${val.growth_used_pct}%/yr</b> <span class="muted">(policy: clamped to 3–18% so one unusual year cannot distort the model)</span></div>
+    <div class="kv">Discount rate: <b>${val.discount_pct}%</b> <span class="muted">(from your Risk appetite — conservative 13% / medium 12% / aggressive 11%; a proxy for cost of equity)</span></div>
+    <div class="kv">Terminal growth: <b>3%</b> <span class="muted">(~long-run GDP; must stay below the discount rate)</span> · Horizon: <b>${val.proj_years} years</b></div>
+    <div class="kv">Cash flow: <b>${money(cur,val.fcf,null)}</b> <span class="muted">via ${esc(val.fcf_source||'n/a')} — falls back to Operating CF − Capex, then 0.9×PAT if Yahoo FCF is missing</span></div>
+    <h3>Every technique, side by side — pick the lens you trust</h3>
+    <table><tr><th>Technique</th><th style="text-align:left">Key inputs</th><th>Output</th><th>vs market</th><th>Read</th></tr>
+      <tr><td>DCF (cash-flow)</td><td style="text-align:left;font-size:12px">FCF grown at ${val.growth_used_pct}%, discounted ${val.discount_pct}%, terminal 3%, ${val.proj_years}y</td><td>${money(cur,val.fair_value_mktcap,null)}</td><td>${val.margin_of_safety_pct==null?'—':val.margin_of_safety_pct+'%'}</td><td><span class="verdict ${vcls(val.dcf_verdict)}">${val.dcf_verdict}</span></td></tr>
+      <tr><td>Reverse DCF</td><td style="text-align:left;font-size:12px">solves the growth that justifies today's mkt cap at the same ${val.discount_pct}% discount</td><td>${val.implied_growth_pct==null?'—':val.implied_growth_pct+'%/yr implied'}</td><td>vs ${val.growth_used_pct}% assumed</td><td style="font-size:12px">${revRead}</td></tr>
+      ${val.scenarios&&val.scenarios.Bear?`<tr><td>Scenario DCF</td><td style="text-align:left;font-size:12px">growth ±3%, discount ∓1–2% (bear/base/bull)</td><td>${money(cur,val.scenarios.Bear.fair_value,null)} – ${money(cur,val.scenarios.Bull?val.scenarios.Bull.fair_value:null,null)}</td><td>${val.scenarios.Bear.mos_pct}% to ${val.scenarios.Bull?val.scenarios.Bull.mos_pct:'—'}%</td><td style="font-size:12px">a value RANGE, not one point</td></tr>`:''}
+      <tr><td>Growth-adjusted P/E (Lynch)</td><td style="text-align:left;font-size:12px">fair P/E = 8 + 0.9×growth, +10% if ROE&gt;18%, +5% if D/E&lt;40</td><td>${lynchFV?money(cur,lynchFV,null):'—'}</td><td>${val.pe_gap_pct==null?'—':val.pe_gap_pct+'%'}</td><td style="font-size:12px">${esc(val.pe_growth_verdict||'—')}</td></tr>
+      <tr><td>PEG ratio</td><td style="text-align:left;font-size:12px">P/E ÷ growth; &lt;1 cheap · ~1 fair · &gt;2 rich</td><td>${val.peg==null?'—':val.peg}</td><td>—</td><td style="font-size:12px">${pegRead}</td></tr>
+      <tr><td>Graham number</td><td style="text-align:left;font-size:12px">√(22.5 × EPS × BVPS) — Ben Graham's conservative fair price</td><td>${gvv?cur+fmt(gvv)+'/share':'—'}</td><td>${gvPct==null?'—':gvPct+'%'}</td><td><span class="verdict ${vcls(gvVerdict)}">${gvVerdict}</span></td></tr>
+      <tr><td>Peer P/E (relative)</td><td style="text-align:left;font-size:12px">re-prices earnings at the sector's median P/E</td><td colspan="3" id="valtech-peer" class="muted" style="text-align:left">loading industry P/E…</td></tr>
+    </table>
+    <p class="muted" style="margin-top:8px">Different lenses suit different styles: Graham/DCF for conservative value, Lynch/PEG for growth, peer P/E for relative calls, scenario DCF for a range. The headline verdict blends DCF + growth-adjusted P/E + PEG so no single lens dominates. Under/Overvalued cutoffs: ±20% vs market.</p>
+    </div></details></section>`));
+
   // user-adjustable DCF: recompute fair value / MoS / verdict / reverse-DCF live, client-side (same math as the backend)
   const dcfDef={g:val.growth_used_pct,r:val.discount_pct,tg:3,y:val.proj_years,fcf:val.fcf==null?'':Math.round(val.fcf)};
   function dcfJS(fcf,g,r,years,tg){if(!fcf||fcf<=0||r<=tg)return null;let pv=0,cf=fcf;for(let t=1;t<=years;t++){cf*=1+g;pv+=cf/Math.pow(1+r,t);}return pv+(cf*(1+tg)/(r-tg))/Math.pow(1+r,years);}
@@ -3038,6 +3118,13 @@ async function loadIndustryPE(ticker,sector){const box=el('indpe');if(!box)retur
       <div class="chip">${d.local_sector||'Local'} industry P/E<b>${d.local_industry_pe??'—'}</b><span class="muted">India median (n=${d.local_n})</span></div>
       <div class="chip">${d.global_sector||'Global'} industry P/E<b>${d.global_industry_pe??'—'}</b><span class="muted">US median (n=${d.global_n})</span></div></div>
       <p class="muted">${me&&d.local_industry_pe?(me<d.local_industry_pe?'Cheaper than its Indian peers':'Pricier than its Indian peers'):''}. ${d.note}</p>`;
+    // also fill the peer-P/E row in the valuation-methodology table
+    const cell=el('valtech-peer');
+    if(cell){const L=window.LAST||{};const mc=L.marketCap,c2=L.currency||'';
+      if(me&&d.local_industry_pe&&mc){const fv=mc*d.local_industry_pe/me;const pct=Math.round((fv/mc-1)*1000)/10;
+        const v2=pct>20?'Undervalued':(pct<-20?'Overvalued':'Fairly valued');
+        cell.innerHTML=`${c2}${fmt(fv)} at sector median P/E ${d.local_industry_pe} · ${pct>=0?'+':''}${pct}% vs market · <span class="verdict ${vcls(v2)}">${v2}</span>`;cell.classList.remove('muted');}
+      else cell.textContent='industry P/E unavailable for this sector';}
   }catch(e){box.textContent='Industry P/E unavailable.';}}
 
 async function loadTechnicals(ticker,cur,tf){const box=el('taout');if(!box)return;box.innerHTML='<div class="spin"></div>';
