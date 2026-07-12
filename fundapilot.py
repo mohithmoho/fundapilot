@@ -2499,40 +2499,6 @@ details summary{cursor:pointer;color:var(--mut);font-size:13px}.disc{font-size:1
 </div>
 <div id="out"></div>
 
-<section class="glass" style="margin-top:18px;padding:18px">
-  <h2>About this project — FAQ</h2>
-  <p class="muted">Common questions from users, reviewers and recruiters — with straight answers about how FundaPilot actually works under the hood.</p>
-
-  <details><summary style="cursor:pointer;font-weight:600">What growth metric does the DCF use?</summary>
-    <p class="muted">Trailing 1-year <b>earnings growth</b>; if unavailable, 1-year <b>revenue growth</b>; if neither, an 8% default. The rate is <b>clamped to 3–18%</b> so one unusual year cannot distort a 8–10-year projection. The exact metric and value used are shown per stock in "Valuation methodology" after every analysis, and you can override every input in "Adjust assumptions" and watch fair value recompute live.</p></details>
-
-  <details><summary style="cursor:pointer;font-weight:600">Where does the discount rate come from?</summary>
-    <p class="muted">From the user's <b>Risk appetite</b> setting: conservative 13%, medium 12%, aggressive 11% — a practical proxy for cost of equity in Indian equities (risk-free ~6.5% + equity risk premium). DCF and reverse-DCF share the same rate so their answers are directly comparable, and it is user-overridable.</p></details>
-
-  <details><summary style="cursor:pointer;font-weight:600">Which valuation techniques are implemented?</summary>
-    <p class="muted">Seven, shown side by side: <b>DCF</b> (single-stage FCF + terminal value), <b>reverse DCF</b> (binary-searches the growth the current price implies), <b>scenario DCF</b> (bear/base/bull range), <b>growth-adjusted fair P/E</b> (Lynch-style: 8 + 0.9×growth with quality premia), <b>PEG</b>, <b>Graham number</b> (√(22.5×EPS×BVPS)) and <b>relative peer P/E</b> (re-pricing earnings at the sector median). The headline verdict deliberately blends three lenses (DCF + fair-P/E + PEG) so no single model dominates.</p></details>
-
-  <details><summary style="cursor:pointer;font-weight:600">Is the data real? What happens when it's missing?</summary>
-    <p class="muted">All numbers come from real filed financial statements and market data (via yfinance) plus Google News RSS — nothing is fabricated. When Yahoo's ratio feed is unavailable (common on cloud IPs), ratios are <b>recomputed from the raw income statement and balance sheet</b>. If a core metric genuinely cannot be computed, the stock is marked <b>"Not rated"</b> instead of guessing — and loss-making companies are hard-capped so they can never score "fundamentally strong".</p></details>
-
-  <details><summary style="cursor:pointer;font-weight:600">How is the health score built?</summary>
-    <p class="muted"><b>60% fundamentals + 40% technicals.</b> Fundamentals: ROE, ROCE, debt/equity, net margin, P/B, growth and P/E each mapped to 0–10 against published benchmark ranges; rated only when the full core set is present. Technicals: 200-DMA trend, 50/200 cross, RSI(14) and 6-month relative strength vs the index. Thresholds are visible next to every metric in the app.</p></details>
-
-  <details><summary style="cursor:pointer;font-weight:600">What's behind the portfolio analytics?</summary>
-    <p class="muted">Standard quant methods on 2 years of daily returns: <b>Sharpe/Sortino</b> (rf 6.5%), <b>Jensen's alpha and beta</b> vs NIFTY, <b>historical 1-day 95% VaR and CVaR</b>, max drawdown, correlation matrix, a <b>2,000-path Monte Carlo</b> one-year simulation, and an <b>efficient frontier</b> sampled from 3,000 random weightings with a max-Sharpe rebalancing target. Stop-loss/target levels use ATR(14): SL = price − 2×ATR, TP = price + 3×ATR (~1.5 reward:risk).</p></details>
-
-  <details><summary style="cursor:pointer;font-weight:600">What does the AI layer do — and how do you stop hallucination?</summary>
-    <p class="muted">The AI reasons <b>only over the numbers the deterministic engine computed</b> — the prompt forbids inventing figures, keeps it strictly on-topic, and every output carries a disclaimer. It is optional (the tool is fully deterministic without it), provider-agnostic (Groq/Claude/any OpenAI-compatible), rate-limited per-IP and per-day, and it keeps a <b>lessons journal</b>: it scores its past calls against real prices and feeds the distilled lessons into future decisions.</p></details>
-
-  <details><summary style="cursor:pointer;font-weight:600">What's the tech stack and architecture?</summary>
-    <p class="muted">A deliberately lean single-file <b>Flask</b> app (~2,400 lines Python + inlined UI with Chart.js), free data (yfinance + Google News), <b>Supabase</b> for Google-OAuth login and per-user watchlists/journals with row-level security, deployed on <b>Render</b> with push-to-deploy CI. A selftest guards the maths (DCF identities, Graham number, RSI edge cases, scoring) and even <b>node-checks the frontend JS</b> before any release.</p></details>
-
-  <details><summary style="cursor:pointer;font-weight:600">How is it secured?</summary>
-    <p class="muted">No secrets in the repo (env vars only), API keys never reach the browser, per-IP rate limiting plus a daily AI cap, ticker input whitelisting, XSS-escaping of all external text, http(s)-only links, security headers, and Supabase RLS so each user can only read their own rows. The backend holds no database of its own — no SQL-injection surface.</p></details>
-
-  <details><summary style="cursor:pointer;font-weight:600">What are the known limitations?</summary>
-    <p class="muted">Educational tool, not investment advice. Free data has gaps (no product-segment revenue, no forward analyst estimates — deliberately not faked). Expected returns are historical, not forecasts. Statement-derived ratios can differ slightly from TTM figures. Chart-pattern detection is heuristic and labelled with confidence. Every limitation is disclosed in-app rather than hidden.</p></details>
-</section>
 </div>
 <div class="disc">⚠️ Educational use only. Not investment advice. Data: Yahoo Finance + Google News. Verify before any decision.</div>
 <div class="creator">creator: mohith</div>
