@@ -40,6 +40,26 @@ MATRIX = {
     ("aggressive", "gt5"): ["midcap", "smallcap", "flexicap"],
 }
 
+# Category browser — analyst's shortcuts over the curated universe. `buckets: None` = every fund.
+CATEGORIES = {
+    "top-returns": {"label": "Highest past returns", "buckets": None,
+                    "note": "Ranked by 3-year CAGR across the whole universe. Chart-toppers are usually the riskiest categories - read the Max DD column before falling in love, and remember past returns do not repeat on schedule."},
+    "largecap": {"label": "Large cap", "buckets": ["largecap-index"],
+                 "note": "Core equity: India's biggest companies. Low-cost index funds here beat most active managers after fees."},
+    "midcap": {"label": "Mid cap", "buckets": ["midcap"],
+               "note": "More growth than large caps, deeper corrections. Treat as 5+ year money."},
+    "smallcap": {"label": "Small cap", "buckets": ["smallcap"],
+                 "note": "Highest long-run potential and the deepest drawdowns (-40% happens). 7+ year money; prefer SIPs over lumpsums."},
+    "flexicap": {"label": "Flexi cap", "buckets": ["flexicap"],
+                 "note": "The manager roams across market caps - a sensible single-fund equity core."},
+    "hybrid": {"label": "Hybrid", "buckets": ["hybrid-conservative", "hybrid-aggressive"],
+               "note": "Equity + debt in one wrapper: a smoother ride than pure equity, usually ahead of FDs over 3+ years."},
+    "debt": {"label": "Debt funds", "buckets": ["debt-liquid", "debt-short"],
+             "note": "Parking and capital preservation. Judge on safety and duration, not CAGR - FD-like returns are the point."},
+    "elss": {"label": "ELSS (tax saver)", "buckets": ["elss"],
+             "note": "Section 80C deduction with a 3-year lock-in. The lock-in is secretly a feature: it forces good behaviour."},
+}
+
 # SEBI category-mandate asset allocation (Oct-2017 categorization circular) — midpoints of the
 # mandated bands, clearly labeled. This is the regulatory envelope, NOT the live portfolio.
 SEBI_ALLOCATION = {
@@ -383,6 +403,31 @@ def mount_mflens(app, *, jresp, ai_available, ai_rate_ok, ai_chat, ai_system):
         except Exception as exc:
             return jresp({"error": f"Could not analyse scheme {code}: {str(exc)[:160]}"}, 200)
 
+    @app.route("/mf/api/category")
+    def mf_category():
+        name = request.args.get("name", "")
+        cat = CATEGORIES.get(name)
+        if not cat:
+            return jresp({"error": "Unknown category. One of: " + ", ".join(CATEGORIES)}, 400)
+        uni = _universe()
+        results, warnings = [], []
+        for fund in uni.get("funds", []):
+            if cat["buckets"] is not None and fund.get("bucket") not in cat["buckets"]:
+                continue
+            try:
+                _, series = _fetch_scheme(fund["schemeCode"])
+                metrics = compute_metrics(series, None, uni.get("riskFreeRatePct", 6.5))
+                results.append({"schemeCode": fund["schemeCode"], "name": fund["name"], "category": fund["category"],
+                                "fundHouse": fund.get("fundHouse"), "cagr1yPct": metrics.get("cagr1yPct"),
+                                "cagr3yPct": metrics.get("cagr3yPct"), "cagr5yPct": metrics.get("cagr5yPct"),
+                                "sharpe": metrics.get("sharpe"), "maxDrawdownPct": metrics.get("maxDrawdownPct")})
+            except Exception as exc:
+                warnings.append(f"{fund.get('name', fund.get('schemeCode'))}: data unavailable ({str(exc)[:80]})")
+        results.sort(key=lambda r: (r["cagr3yPct"] is None, -(r["cagr3yPct"] or 0)))
+        return jresp({"category": name, "label": cat["label"], "note": cat["note"], "funds": results,
+                      "warnings": warnings, "asOf": uni.get("asOf"),
+                      "disclaimer": "Educational only, not investment advice."})
+
     @app.route("/mf/api/backtest")
     def mf_backtest():
         code = request.args.get("code", "")
@@ -529,7 +574,20 @@ footer{margin-top:34px;text-align:center;color:#8b9aa5;font-size:11px}
 <div class="chips" id="imode"><span class="chip on" data-v="sip">SIP (monthly)</span><span class="chip" data-v="lumpsum">Lumpsum (one-time)</span></div>
 <input id="amt" type="number" min="500" step="500" value="10000" style="width:150px;padding:9px 12px;border:1px solid var(--line);border-radius:12px;background:#ffffffad;font:inherit;font-size:13px" title="Amount in rupees">
 <span class="muted">Rs - used for the past-returns line on every fund</span></div>
+<div style="margin-top:15px;display:flex;gap:11px;align-items:center;flex-wrap:wrap"><button class="btn pri" id="analyseBtn" disabled>&#128269; Analyse my matches</button><span class="muted" id="analyseHint">Pick risk appetite + horizon first</span></div>
 <div id="recWrap"><div id="recWarn"></div><div class="grid" id="recs"></div></div></div>
+
+<div class="card"><p class="lbl">Or browse by category - analyst's shortcuts</p>
+<div class="chips" id="cats">
+<span class="chip" data-v="top-returns">&#127942; Highest past returns</span>
+<span class="chip" data-v="largecap">Large cap</span>
+<span class="chip" data-v="midcap">Mid cap</span>
+<span class="chip" data-v="smallcap">Small cap</span>
+<span class="chip" data-v="flexicap">Flexi cap</span>
+<span class="chip" data-v="hybrid">Hybrid</span>
+<span class="chip" data-v="debt">Debt funds</span>
+<span class="chip" data-v="elss">ELSS (tax saver)</span>
+</div><p class="muted" style="margin-top:8px">One click lists the category with live 1y/3y/5y CAGR, Sharpe and worst drawdown - results appear above.</p></div>
 
 <div class="card"><p class="lbl">Or analyse any fund</p>
 <div class="search"><input id="q" placeholder="Type 3+ letters, e.g. 'Quant Small Cap direct'..." autocomplete="off"></div>
@@ -578,9 +636,22 @@ const GLOSSARY=__GLOSSARY__;
 const sel=$('#gsel');Object.keys(GLOSSARY).forEach(k=>{const o=document.createElement('option');o.value=k;o.textContent=k;sel.appendChild(o)});
 sel.onchange=()=>{const g=$('#gout');if(sel.value){g.style.display='block';g.textContent=GLOSSARY[sel.value]}else g.style.display='none'};
 function chips(id,cb){document.querySelectorAll('#'+id+' .chip').forEach(c=>c.onclick=()=>{document.querySelectorAll('#'+id+' .chip').forEach(x=>x.classList.remove('on'));c.classList.add('on');cb(c.dataset.v)})}
-chips('risk',v=>{risk=v;maybeRecommend()});chips('horizon',v=>{horizon=v;maybeRecommend()});
-chips('imode',v=>{imode=v;maybeRecommend()});
-$('#amt').addEventListener('change',()=>{amount=Math.max(0,Number($('#amt').value)||0);maybeRecommend()});
+chips('risk',v=>{risk=v;syncAnalyse()});chips('horizon',v=>{horizon=v;syncAnalyse()});
+chips('imode',v=>{imode=v});
+$('#amt').addEventListener('change',()=>{amount=Math.max(0,Number($('#amt').value)||0)});
+function syncAnalyse(){const ok=!!(risk&&horizon);$('#analyseBtn').disabled=!ok;$('#analyseHint').textContent=ok?'Ready - metrics compute live from NAV history when you click':'Pick risk appetite + horizon first'}
+$('#analyseBtn').onclick=()=>maybeRecommend();
+chips('cats',v=>loadCategory(v));
+async function loadCategory(name){$('#recs').innerHTML='<p class="muted">Computing category metrics from NAV history...</p>';$('#recWarn').innerHTML='';
+try{const r=await(await fetch(`/mf/api/category?name=${encodeURIComponent(name)}`)).json();
+if(r.error){$('#recWarn').innerHTML=`<div class="warn">${esc(r.error)}</div>`;$('#recs').innerHTML='';return}
+$('#recWarn').innerHTML=`<div class="warn" style="background:#eef6ff;color:#31506b">&#128202; <b>${esc(r.label)}</b> &middot; ${esc(r.note)}</div>`+(r.warnings||[]).map(w=>`<div class="warn">${esc(w)}</div>`).join('');
+$('#recs').innerHTML=(r.funds||[]).map(f=>`<div class="fund" data-code="${f.schemeCode}">
+<b>${esc(f.name)}</b><span class="cat">${esc(f.category||'')} - ${esc(f.fundHouse||'')}</span>
+<div class="row"><span>CAGR 1y <b>${fmt(f.cagr1yPct)}${f.cagr1yPct==null?'':'%'}</b></span><span>3y <b>${fmt(f.cagr3yPct)}${f.cagr3yPct==null?'':'%'}</b></span><span>5y <b>${fmt(f.cagr5yPct)}${f.cagr5yPct==null?'':'%'}</b></span></div>
+<div class="row"><span>Sharpe <b>${fmt(f.sharpe)}</b></span><span>Max DD <b>${fmt(f.maxDrawdownPct)}${f.maxDrawdownPct==null?'':'%'}</b></span></div></div>`).join('')||'<p class="muted">No funds in this category.</p>';
+document.querySelectorAll('.fund').forEach(el=>el.onclick=()=>analyze(el.dataset.code));}
+catch(e){$('#recs').innerHTML='<p class="warn">Could not load the category - is the network up?</p>'}}
 function money(v){return 'Rs '+Number(v).toLocaleString('en-IN')}
 async function maybeRecommend(){if(!risk||!horizon)return;$('#recs').innerHTML='<p class="muted">Fetching NAV histories and computing metrics...</p>';$('#recWarn').innerHTML='';
 try{const qs=new URLSearchParams({risk,horizon});if(imode&&amount>0){qs.set('mode',imode);qs.set('amount',amount)}
@@ -674,6 +745,17 @@ def _selftest():
     short = _backtest(steady, "sip", 10000, 0)
     assert "error" in short, "zero-year backtest must return an error, not crash"
     assert SEBI_ALLOCATION["elss"]["slices"][0][1] + SEBI_ALLOCATION["elss"]["slices"][1][1] == 100, "allocation slices must sum to 100"
+
+    # Category browser: every mapped bucket must exist, and the None-safe sort puts missing CAGRs last.
+    valid_buckets = {"debt-liquid", "debt-short", "hybrid-conservative", "hybrid-aggressive",
+                     "largecap-index", "flexicap", "midcap", "smallcap", "elss"}
+    for key, cat in CATEGORIES.items():
+        assert cat["buckets"] is None or all(b in valid_buckets for b in cat["buckets"]), f"bad bucket in {key}"
+        assert cat.get("note"), f"category {key} needs an analyst note"
+    assert CATEGORIES["top-returns"]["buckets"] is None
+    ordered = sorted([{"cagr3yPct": None}, {"cagr3yPct": 5.0}, {"cagr3yPct": 12.0}],
+                     key=lambda r: (r["cagr3yPct"] is None, -(r["cagr3yPct"] or 0)))
+    assert [r["cagr3yPct"] for r in ordered] == [12.0, 5.0, None], "category sort must rank None last"
 
     # Holdings freshness ages against the real clock, so a snapshot can never silently look current.
     today = date(2026, 7, 16)

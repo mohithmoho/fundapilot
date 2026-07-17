@@ -17,7 +17,7 @@ const thin = (record) => ({
 });
 
 export const sampleIpo = {
-  id: 'sbifm', status: 'open', exchange: 'NSE', board: 'Mainboard', openDate: '14 Jul 2026', closeDate: '16 Jul 2026', currency: '₹', unit: 'Cr',
+  id: 'sbifm', status: 'closed', exchange: 'NSE', board: 'Mainboard', openDate: '14 Jul 2026', closeDate: '16 Jul 2026', currency: '₹', unit: 'Cr',
   dataAsOf: '16 Jul 2026', aliases: ['SBI', 'SBI MF', 'SBI AMC', 'SBI Mutual Fund', 'State Bank'],
   nseSymbol: 'SBIFUNDMGT', // ponytail: tentative IPO symbol — live NSE refresh fails safe if it differs
   sources: { note: 'Seeded 16 Jul 2026 from RHP coverage (Finnovate, Groww, ipocentral), Zerodha calendar and HDFC Sky Day-3 subscription (1:54pm). Verify against the SEBI-filed RHP.' },
@@ -50,45 +50,112 @@ export const sampleIpo = {
   market: { gmpPercent: 15.9, qibSubscription: 22.79, hniSubscription: 19.32, retailSubscription: 3.08, newsSentiment: 58, subscriptionAsOf: '16 Jul 2026 1:54pm — total 11.56×' },
 };
 
-const alpine = thin({
-  id: 'alpine', status: 'open', exchange: 'NSE', board: 'Mainboard', openDate: '14 Jul 2026', closeDate: '16 Jul 2026', currency: '₹', unit: 'Cr',
-  dataAsOf: '16 Jul 2026', aliases: ['Alpine'],
-  sources: { note: 'Offer terms from the Zerodha IPO calendar, 16 Jul 2026. Financials not yet loaded.' },
-  company: { name: 'Alpine Texworld Limited', sector: 'Consumer discretionary', industry: 'Textiles' },
-  ipo: { priceBand: '₹100–₹105', issueSize: 'See RHP', freshIssue: NOT_DISCLOSED, ofs: NOT_DISCLOSED, listingDate: '21 Jul 2026', lotSize: NOT_DISCLOSED, minimumInvestment: NOT_DISCLOSED, useOfFunds: 'See RHP objects of the offer', pe: 0 },
-});
+const alpine = {
+  id: 'alpine', status: 'closed', exchange: 'NSE', board: 'Mainboard', openDate: '14 Jul 2026', closeDate: '16 Jul 2026', currency: '₹', unit: 'Cr',
+  dataAsOf: '17 Jul 2026', aliases: ['Alpine'],
+  sources: { note: 'Offer terms and FY25/FY26 financials from India Infoline IPO coverage, 17 Jul 2026. EPS derived from the stated ₹401.59 Cr post-issue market cap at ₹105 (3.82 Cr shares) — consistent with the stated post-IPO P/E of 18.49×.' },
+  company: { name: 'Alpine Texworld Limited', sector: 'Consumer discretionary', industry: 'Textiles', founded: '2016', headquarters: 'India', promoters: 'Alpine promoter group', businessModel: 'Dyes, processes and manufactures textile fabrics — denim, shirting, suiting and ready-for-dyeing — across two facilities running 112 high-speed looms.', products: 'Denim, shirting, suiting, RFD fabrics', revenueSources: 'Fabric processing & manufacturing' },
+  ipo: { priceBand: '₹100–₹105', issueSize: '₹126.25 Cr', freshIssue: '₹126.25 Cr (1.20 Cr shares)', ofs: 'None — 100% fresh issue', listingDate: '21 Jul 2026', lotSize: 142, minimumInvestment: '₹14,910', useOfFunds: 'Capacity expansion (₹32.08 Cr), debt repayment (₹52.20 Cr), general corporate purposes.', pe: 18.49 },
+  businessScore: 5.0, industryScore: 4.5, capacityExpansion: true,
+  financials: [
+    { year: 'FY25', revenue: 237.66, profit: 8.63, ebitda: 27.0, eps: 2.26, operatingCashFlow: null, freeCashFlow: null, debt: null, roe: null, roce: null, ebitdaMargin: 11.4, netMargin: 3.6, currentRatio: null, interestCoverage: null, debtEquity: null },
+    { year: 'FY26', revenue: 350.18, profit: 21.72, ebitda: 47.45, eps: 5.68, operatingCashFlow: null, freeCashFlow: null, debt: null, roe: null, roce: null, ebitdaMargin: 13.5, netMargin: 6.2, currentRatio: null, interestCoverage: null, debtEquity: null },
+  ],
+  peers: [],
+  governance: { ceo: 'See RHP', experience: 'Operating since 2016', auditor: 'See RHP', shareholding: 'See RHP', litigationLevel: 'medium', flags: [] },
+  risks: [
+    { label: 'Cyclical, commodity-like textile market with thin margins', level: 'high' },
+    { label: 'Tepid demand: issue subscribed just 1.04× at close', level: 'medium' },
+    { label: 'Large slice of proceeds goes to debt repayment, not growth', level: 'medium' },
+  ],
+  market: { gmpPercent: 2.9, qibSubscription: null, hniSubscription: null, retailSubscription: null, newsSentiment: 48, subscriptionAsOf: 'close 16 Jul 2026 — total 1.04×' },
+};
 
-const millworks = thin({
-  id: 'millworks', status: 'open', exchange: 'NSE', board: 'SME', openDate: '14 Jul 2026', closeDate: '16 Jul 2026', currency: '₹', unit: 'Cr',
-  dataAsOf: '16 Jul 2026', aliases: ['Millworks'],
-  sources: { note: 'Offer terms from the Zerodha IPO calendar, 16 Jul 2026. Financials not yet loaded.' },
-  company: { name: 'Millworks Technologies Limited', sector: 'Technology', industry: 'Engineering services' },
-  ipo: { priceBand: '₹315–₹331', issueSize: 'See RHP', freshIssue: NOT_DISCLOSED, ofs: NOT_DISCLOSED, listingDate: '21 Jul 2026', lotSize: NOT_DISCLOSED, minimumInvestment: NOT_DISCLOSED, useOfFunds: 'See RHP objects of the offer', pe: 0 },
-});
+const millworks = {
+  id: 'millworks', status: 'closed', exchange: 'BSE', board: 'SME', openDate: '14 Jul 2026', closeDate: '16 Jul 2026', currency: '₹', unit: 'Cr',
+  dataAsOf: '17 Jul 2026', aliases: ['Millworks'],
+  sources: { note: 'Offer terms and FY24–FY26 financials from IPO Watch coverage, 17 Jul 2026. Verify against the RHP — SME disclosures are thinner than mainboard.' },
+  company: { name: 'Millworks Technologies Limited', sector: 'Industrials', industry: 'Precision engineering', founded: 'See RHP', headquarters: 'Bengaluru, India', promoters: 'Millworks promoter group', businessModel: 'Manufactures high-accuracy machined components, sheet-metal parts and integrated assemblies for railways, aerospace, defence and semiconductor customers across four Bengaluru facilities. Revenue jumped ~7× in FY26 on order-book execution.', products: 'Machined components, sheet metal, assemblies', revenueSources: 'Railways · aerospace · defence · semiconductor' },
+  ipo: { priceBand: '₹315–₹331', issueSize: '₹160.34 Cr', freshIssue: '₹160.34 Cr', ofs: 'None — 100% fresh issue', listingDate: '21 Jul 2026 (BSE SME)', lotSize: 400, minimumInvestment: '₹1,32,400', useOfFunds: 'See RHP objects of the offer', pe: null },
+  businessScore: 6.5, industryScore: 7.0, capacityExpansion: true,
+  financials: [
+    { year: 'FY24', revenue: 9.4, profit: 1.95, ebitda: null, eps: null, operatingCashFlow: null, freeCashFlow: null, debt: null, roe: null, roce: null, ebitdaMargin: null, netMargin: 20.7, currentRatio: null, interestCoverage: null, debtEquity: null },
+    { year: 'FY25', revenue: 22.42, profit: 5.25, ebitda: null, eps: null, operatingCashFlow: null, freeCashFlow: null, debt: null, roe: null, roce: null, ebitdaMargin: null, netMargin: 23.4, currentRatio: null, interestCoverage: null, debtEquity: null },
+    { year: 'FY26', revenue: 153.4, profit: 37.06, ebitda: null, eps: null, operatingCashFlow: null, freeCashFlow: null, debt: null, roe: null, roce: null, ebitdaMargin: null, netMargin: 24.2, currentRatio: null, interestCoverage: null, debtEquity: null },
+  ],
+  peers: [],
+  governance: { ceo: 'See RHP', experience: 'Four manufacturing facilities in Bengaluru', auditor: 'See RHP', shareholding: 'See RHP', litigationLevel: 'medium', flags: [] },
+  risks: [
+    { label: 'SME listing: low liquidity and wide post-listing swings', level: 'high' },
+    { label: 'A ~7× revenue jump in one year needs scrutiny — check order-book durability in the RHP', level: 'high' },
+    { label: '89% GMP means expectations are already extreme', level: 'medium' },
+  ],
+  market: { gmpPercent: 89, qibSubscription: null, hniSubscription: null, retailSubscription: null, newsSentiment: 62, subscriptionAsOf: 'closed 16 Jul 2026 — strong demand reported' },
+};
 
-const sotefin = thin({
+const sotefin = {
   id: 'sotefin', status: 'open', exchange: 'BSE', board: 'SME', openDate: '16 Jul 2026', closeDate: '20 Jul 2026', currency: '₹', unit: 'Cr',
-  dataAsOf: '16 Jul 2026', aliases: ['Sotefin'],
-  sources: { note: 'Offer terms from Zerodha/Chittorgarh calendars, 16 Jul 2026. Financials not yet loaded.' },
-  company: { name: 'Sotefin Bharat Limited', sector: 'Industrials', industry: 'Automated parking systems' },
-  ipo: { priceBand: '₹178–₹187', issueSize: 'See RHP', freshIssue: NOT_DISCLOSED, ofs: NOT_DISCLOSED, listingDate: '23 Jul 2026 (BSE SME)', lotSize: NOT_DISCLOSED, minimumInvestment: NOT_DISCLOSED, useOfFunds: 'See RHP objects of the offer', pe: 0 },
-});
+  dataAsOf: '17 Jul 2026', aliases: ['Sotefin'],
+  sources: { note: 'Offer terms and FY26 financials from IPO coverage (myfinology/ipowatch), 17 Jul 2026. FY25 figures derived from the company-stated +26% revenue / +54% PAT growth — verify against the RHP.' },
+  company: { name: 'Sotefin Bharat Limited', sector: 'Industrials', industry: 'Automated parking systems', founded: 'See RHP', headquarters: 'India', promoters: 'Sotefin promoter group', businessModel: 'Designs and delivers automated multi-level car parking systems for real-estate and infrastructure clients.', products: 'Automated parking towers, puzzle parking, stackers', revenueSources: 'Project execution & maintenance' },
+  ipo: { priceBand: '₹178–₹187', issueSize: 'See RHP', freshIssue: NOT_DISCLOSED, ofs: NOT_DISCLOSED, listingDate: '23 Jul 2026 (BSE SME)', lotSize: 600, minimumInvestment: '₹1,12,200 (1 lot)', useOfFunds: 'See RHP objects of the offer', pe: null },
+  businessScore: 6.0, industryScore: 6.0, capacityExpansion: true,
+  financials: [
+    { year: 'FY25', revenue: 93.8, profit: 11.28, ebitda: null, eps: null, operatingCashFlow: null, freeCashFlow: null, debt: null, roe: null, roce: null, ebitdaMargin: null, netMargin: 12.0, currentRatio: null, interestCoverage: null, debtEquity: null },
+    { year: 'FY26', revenue: 118.23, profit: 17.37, ebitda: null, eps: null, operatingCashFlow: null, freeCashFlow: null, debt: null, roe: null, roce: null, ebitdaMargin: null, netMargin: 14.7, currentRatio: null, interestCoverage: null, debtEquity: null },
+  ],
+  peers: [],
+  governance: { ceo: 'See RHP', experience: 'See RHP', auditor: 'See RHP', shareholding: 'See RHP', litigationLevel: 'medium', flags: [] },
+  risks: [
+    { label: 'SME listing: low liquidity and wide post-listing swings', level: 'high' },
+    { label: 'Project-based revenue depends on real-estate capex cycles', level: 'medium' },
+    { label: 'Large lot size (₹1.12L minimum) concentrates retail risk', level: 'medium' },
+  ],
+  market: { gmpPercent: 0, qibSubscription: null, hniSubscription: null, retailSubscription: null, newsSentiment: 52, subscriptionAsOf: 'open 16–20 Jul 2026' },
+};
 
-const caliber = thin({
-  id: 'caliber', status: 'upcoming', exchange: 'BSE', board: 'Mainboard', openDate: '17 Jul 2026', closeDate: '21 Jul 2026', currency: '₹', unit: 'Cr',
-  dataAsOf: '16 Jul 2026', aliases: ['Caliber', 'Calibre Mining'],
-  sources: { note: 'Offer terms from Zerodha/Groww calendars, 16 Jul 2026 (₹450 Cr book-build, BSE+NSE). Financials not yet loaded.' },
-  company: { name: 'Caliber Mining and Logistics Limited', sector: 'Materials', industry: 'Mining & logistics' },
-  ipo: { priceBand: '₹402–₹424', issueSize: '₹450 Cr', freshIssue: NOT_DISCLOSED, ofs: NOT_DISCLOSED, listingDate: '24 Jul 2026', lotSize: NOT_DISCLOSED, minimumInvestment: NOT_DISCLOSED, useOfFunds: 'See RHP objects of the offer', pe: 0 },
-});
+const caliber = {
+  id: 'caliber', status: 'open', exchange: 'BSE', board: 'Mainboard', openDate: '17 Jul 2026', closeDate: '21 Jul 2026', currency: '₹', unit: 'Cr',
+  dataAsOf: '17 Jul 2026', aliases: ['Caliber', 'Calibre Mining'],
+  sources: { note: 'Offer terms + FY26 financials and margins from Business Today / Business Standard coverage, 17 Jul 2026. FY24–FY25 figures derived from the company-stated growth rates (rev +17.4% FY26, 32.7% CAGR FY24–26) — verify against the RHP.' },
+  company: { name: 'Caliber Mining and Logistics Limited', sector: 'Materials', industry: 'Mining services & logistics', founded: 'See RHP', headquarters: 'India', promoters: 'Caliber promoter group', businessModel: 'Provides mine development, overburden removal and integrated logistics services to coal and mineral producers; FY24–26 revenue compounded at ~33%.', products: 'Mining contracts, haulage, logistics', revenueSources: 'Mine services & transport contracts' },
+  ipo: { priceBand: '₹402–₹424', issueSize: '₹450 Cr', freshIssue: NOT_DISCLOSED, ofs: NOT_DISCLOSED, listingDate: '24 Jul 2026', lotSize: 35, minimumInvestment: '₹14,840', useOfFunds: 'See RHP objects of the offer', pe: null },
+  businessScore: 6.0, industryScore: 5.5, capacityExpansion: true,
+  financials: [
+    { year: 'FY24', revenue: 956.6, profit: 92.6, ebitda: null, eps: null, operatingCashFlow: null, freeCashFlow: null, debt: null, roe: null, roce: null, ebitdaMargin: null, netMargin: 9.7, currentRatio: null, interestCoverage: null, debtEquity: null },
+    { year: 'FY25', revenue: 1434.9, profit: 131.6, ebitda: null, eps: null, operatingCashFlow: null, freeCashFlow: null, debt: null, roe: null, roce: null, ebitdaMargin: null, netMargin: 9.2, currentRatio: null, interestCoverage: null, debtEquity: null },
+    { year: 'FY26', revenue: 1684.66, profit: 157.9, ebitda: 432.9, eps: null, operatingCashFlow: null, freeCashFlow: null, debt: null, roe: null, roce: null, ebitdaMargin: 25.7, netMargin: 9.4, currentRatio: null, interestCoverage: null, debtEquity: null },
+  ],
+  peers: [],
+  governance: { ceo: 'See RHP', experience: 'See RHP', auditor: 'See RHP', shareholding: 'See RHP', litigationLevel: 'medium', flags: [] },
+  risks: [
+    { label: 'Client and commodity concentration: coal/mineral capex cycles', level: 'high' },
+    { label: 'Capital-heavy contract mining; margins hinge on diesel and equipment costs', level: 'medium' },
+    { label: 'Thin single-digit net margins leave little buffer', level: 'medium' },
+  ],
+  market: { gmpPercent: 0, qibSubscription: null, hniSubscription: null, retailSubscription: null, newsSentiment: 55, subscriptionAsOf: 'opens 17 Jul 2026' },
+};
 
-const gulfLloyds = thin({
-  id: 'gulflloyds', status: 'upcoming', exchange: 'NSE', board: 'SME', openDate: '20 Jul 2026', closeDate: '22 Jul 2026', currency: '₹', unit: 'Cr',
-  dataAsOf: '16 Jul 2026', aliases: ['Gulf Lloyds', 'Gulf'],
-  sources: { note: 'Dates from Zerodha/Groww calendars, 16 Jul 2026; price band not announced. Financials not yet loaded.' },
-  company: { name: 'Gulf Lloyds (India) Limited', sector: 'Industrials', industry: 'Engineering' },
-  ipo: { priceBand: 'To be announced', issueSize: 'See RHP', freshIssue: NOT_DISCLOSED, ofs: NOT_DISCLOSED, listingDate: '27 Jul 2026', lotSize: NOT_DISCLOSED, minimumInvestment: NOT_DISCLOSED, useOfFunds: 'See RHP objects of the offer', pe: 0 },
-});
+const gulfLloyds = {
+  id: 'gulflloyds', status: 'upcoming', exchange: 'BSE', board: 'SME', openDate: '20 Jul 2026', closeDate: '22 Jul 2026', currency: '₹', unit: 'Cr',
+  dataAsOf: '17 Jul 2026', aliases: ['Gulf Lloyds', 'Gulf'],
+  sources: { note: 'Offer terms and FY25/FY26 financials from ipoji/ipowatch coverage, 17 Jul 2026. Fixed-price issue at ₹100. Verify against the RHP.' },
+  company: { name: 'Gulf Lloyds (India) Limited', sector: 'Industrials', industry: 'Engineering', founded: 'See RHP', headquarters: 'India', promoters: 'Gulf Lloyds promoter group', businessModel: 'Engineering services firm; revenue flat around ₹36 Cr with profit slipping in FY26 — read the RHP for the order pipeline.', products: 'Engineering services', revenueSources: 'Project contracts' },
+  ipo: { priceBand: '₹100 (fixed price)', issueSize: '₹18.19 Cr', freshIssue: NOT_DISCLOSED, ofs: NOT_DISCLOSED, listingDate: '27 Jul 2026 (BSE SME)', lotSize: 1200, minimumInvestment: '₹1,20,000 (1 lot)', useOfFunds: 'See RHP objects of the offer', pe: null },
+  businessScore: 4.5, industryScore: 5.0, capacityExpansion: false,
+  financials: [
+    { year: 'FY25', revenue: 35.88, profit: 4.67, ebitda: null, eps: null, operatingCashFlow: null, freeCashFlow: null, debt: null, roe: null, roce: null, ebitdaMargin: null, netMargin: 13.0, currentRatio: null, interestCoverage: null, debtEquity: null },
+    { year: 'FY26', revenue: 35.97, profit: 4.3, ebitda: 7.9, eps: null, operatingCashFlow: null, freeCashFlow: null, debt: null, roe: null, roce: null, ebitdaMargin: 22.0, netMargin: 12.0, currentRatio: null, interestCoverage: null, debtEquity: null },
+  ],
+  peers: [],
+  governance: { ceo: 'See RHP', experience: 'See RHP', auditor: 'See RHP', shareholding: 'See RHP', litigationLevel: 'medium', flags: [] },
+  risks: [
+    { label: 'Flat revenue and falling profit going into the issue', level: 'high' },
+    { label: 'Tiny ₹18 Cr SME issue: very low liquidity after listing', level: 'high' },
+    { label: 'Large ₹1.2L minimum lot concentrates retail risk', level: 'medium' },
+  ],
+  market: { gmpPercent: 0, qibSubscription: null, hniSubscription: null, retailSubscription: null, newsSentiment: 45, subscriptionAsOf: 'opens 20 Jul 2026' },
+};
 
 // Recently listed (real outcomes — these also anchor the listing-gain model's reference set).
 const icElectricals = thin({

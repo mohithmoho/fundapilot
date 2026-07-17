@@ -73,6 +73,14 @@ hr{border-color:var(--line)}
 /* Chips / pills / badges commonly used in FundaPilot */
 .pill,.chip,.badge{background:#ffffffad;border:1px solid var(--line);color:var(--txt)}
 
+/* Autocomplete suggestion dropdowns (Company tab, compare box, tracker) — the original
+   hardcodes a dark #0e1422 panel, unreadable once body text went dark. */
+.acbox{background:#ffffff;border:1px solid var(--line);box-shadow:-4px -4px 10px #ffffffcc,8px 12px 24px #39605c26;color:var(--txt)}
+.acbox div{border-bottom:1px solid var(--line)}
+.acbox div:hover{background:#e2f2ee;color:#1e4d44}
+.acbox small{color:var(--mut)}
+.hint{color:var(--mut)}
+
 /* Embedded module iframes */
 .lens-frame{width:100%;height:calc(100vh - 215px);min-height:640px;border:0;border-radius:16px;background:#fff;
   box-shadow:-7px -7px 16px #ffffffd9,12px 16px 30px #39605c1a}

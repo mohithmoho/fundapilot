@@ -6,11 +6,11 @@ let report = computeAssessment(ipo);
 const $ = (selector) => document.querySelector(selector);
 // Same bundle runs standalone (Node server, APIs at /api) and mounted inside FundaPilot (Flask, /ipolens/api).
 const apiBase = location.pathname.includes('/ipolens') ? '/ipolens/api' : '/api';
-const fmt = (number, digits = 1) => `${Number(number).toFixed(digits).replace(/\.0$/, '')}`;
-const pct = (number, digits = 1) => `${fmt(number, digits)}%`;
+const fmt = (number, digits = 1) => (number == null || Number.isNaN(Number(number)) ? '—' : `${Number(number).toFixed(digits).replace(/\.0$/, '')}`);
+const pct = (number, digits = 1) => (number == null || Number.isNaN(Number(number)) ? '—' : `${fmt(number, digits)}%`);
 const title = (key) => key.replace(/\b\w/g, c => c.toUpperCase());
 const scoreClass = (value, good, watch) => value >= good ? 'good' : value >= watch ? 'watch' : 'risk';
-const statusMeta = { upcoming: ['Upcoming', 'up'], open: ['Open now', 'open'], listed: ['Listed', 'listed'] };
+const statusMeta = { upcoming: ['Upcoming', 'up'], open: ['Open now', 'open'], closed: ['Closed · lists soon', 'up'], listed: ['Listed', 'listed'] };
 const chip = (status) => { const [label, css] = statusMeta[status] || ['—', 'listed']; return `<span class="status-chip s-${css}">${label}</span>`; };
 const money = () => ipo.currency || '₹';
 const unitWord = () => (ipo.unit === 'M' ? 'million' : 'crore');
@@ -220,7 +220,7 @@ function loadIpoById(id, announce = true) {
 }
 function updateDirectory() {
   $('#ipoOptions').innerHTML = ipoDirectory.map(r => `<option value="${r.company.name}"></option>`).join('');
-  const live = ipoDirectory.filter(r => r.status === 'upcoming' || r.status === 'open');
+  const live = ipoDirectory.filter(r => r.status === 'upcoming' || r.status === 'open' || r.status === 'closed');
   $('#upcomingList').innerHTML = live.map(r => `<button class="up-card${r.id === ipo.id ? ' active' : ''}" data-ipo="${r.id}"><span class="up-name">${r.company.name}</span><span class="up-meta">${r.exchange} · ${r.board} · ${r.company.industry}</span><span class="up-dates">${chip(r.status)} ${r.openDate} → ${r.closeDate}</span></button>`).join('');
 }
 // Typo-tolerant relevance search: exact > prefix > substring > word-prefix > small edit distance.
