@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="A local-first, explainable IPO research dashboard." />
+    <title>IPO Lens — explainable IPO research</title>
+    <link rel="stylesheet" href="src/styles.css" />
+    <style>.financial-table-wrap{margin:0 -1px;overflow:auto;border-top:1px solid rgba(36,73,85,.12)}.financial-table-wrap table{min-width:610px}.financial-table-wrap td,.financial-table-wrap th{padding:7px 8px}.structured-input{margin-top:14px;border-top:1px solid rgba(36,73,85,.12);padding-top:12px}.structured-input summary{cursor:pointer;font-size:12px;font-weight:700}.structured-input p{color:#667d89;font-size:11px}.structured-input label{display:block;margin-top:10px;color:#6c818d;font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase}.structured-input input[type=file]{display:block;width:100%;margin:5px 0 8px;padding:8px;border:1px dashed rgba(36,73,85,.24);border-radius:9px;background:rgba(255,255,255,.48);color:#516a76;font:11px/1.4 inherit}.structured-input textarea{min-height:120px;margin:7px 0 10px}.file-mode-notice{width:min(1160px,calc(100% - 40px));margin:12px auto -2px;padding:9px 12px;border:1px solid #e9c87c;border-radius:10px;background:#fff7dc;color:#78581c;font-size:12px}.file-mode-notice code{font-weight:700}</style>
+  </head>
+  <body>
+    <div class="noise" aria-hidden="true"></div>
+    <p class="file-mode-notice" id="fileModeNotice" hidden>To use the live dashboard, double-click <code>start-ipo-lens.cmd</code> in this folder. Opening <code>index.html</code> directly is preview-only.</p>
+    <header class="topbar shell">
+      <a class="brand" href="#top" aria-label="IPO Lens home"><span class="brand-orb">◈</span><span>IPO<span>Lens</span></span></a>
+      <div class="status-pill"><i></i><span id="liveStatus">Local model ready</span></div>
+      <nav aria-label="Main navigation"><a href="#overview">Overview</a><a href="#financials">Financials</a><a href="#verdict">Verdict</a></nav>
+    </header>
+
+    <main id="top" class="shell">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">IPO research that shows its work</p>
+          <h1>Know what you’re buying.<br /><em>Before</em> the bell.</h1>
+          <p class="lede">A clear, local-first way to review RHP facts, financial quality, valuation, risks and market signals. No premium AI required.</p>
+          <div class="hero-actions">
+            <button class="button primary" id="useSample"><span>Explore sample analysis</span> <b>↗</b></button>
+            <button class="button ghost" id="openImport">Import RHP text <span>⌄</span></button>
+          </div>
+          <p class="freshness"><span>●</span> Model refreshed <time id="freshness">just now</time> · Live sources are optional and fail safely.</p>
+        </div>
+        <div class="hero-orbit" aria-label="Illustration of investment analysis layers">
+          <div class="orbit-ring ring-a"></div><div class="orbit-ring ring-b"></div><div class="orbit-ring ring-c"></div>
+          <div class="orbital-tag tag-a">RHP facts</div><div class="orbital-tag tag-b">Peer value</div><div class="orbital-tag tag-c">Risk check</div>
+          <div class="core-orb"><span>IPO</span><strong>Lens</strong><small>explainable</small></div>
+        </div>
+      </section>
+
+      <section class="command-surface" aria-label="IPO analysis controls">
+        <div class="company-identity"><span class="company-mark" id="companyInitial">A</span><div><p id="companySector">SOLAR EQUIPMENT · MAINBOARD</p><h2 id="companyName">Aurora Renewables Limited</h2></div></div>
+        <div class="command-actions"><button class="mini-button" id="refreshNews">↻ Refresh news pulse</button><button class="mini-button" id="exportSnapshot">⇩ Save snapshot</button></div>
+      </section>
+
+      <section class="ipo-search" id="search" aria-label="Find an IPO to analyse">
+        <div class="search-head"><p class="eyebrow">Find an IPO</p><h2>Search any IPO — NSE, BSE or international</h2></div>
+        <div class="search-controls">
+          <label class="search-field"><span class="search-ic" aria-hidden="true">⌕</span>
+            <input id="ipoSearch" type="search" list="ipoOptions" autocomplete="off" placeholder="Company, sector or symbol… (e.g. Aurora, semiconductors, NWND)" aria-label="Search IPOs" />
+            <datalist id="ipoOptions"></datalist>
+          </label>
+          <select id="exchangeFilter" aria-label="Filter by exchange">
+            <option value="">All exchanges</option>
+            <option value="NSE">NSE</option>
+            <option value="BSE">BSE</option>
+            <option value="INTL">International</option>
+          </select>
+          <select id="statusFilter" aria-label="Filter by status">
+            <option value="">Any status</option>
+            <option value="upcoming">Upcoming</option>
+            <option value="open">Open now</option>
+            <option value="listed">Listed</option>
+          </select>
+        </div>
+        <div class="upcoming-strip"><span class="up-label">Upcoming &amp; open</span><div id="upcomingList" class="upcoming-list"></div></div>
+        <div class="search-results" id="searchResults" role="listbox" aria-label="Search results"></div>
+      </section>
+
+      <section class="score-board" id="overview">
+        <article class="score-lead glass-card">
+          <div><p class="eyebrow">Overall research score</p><div class="score-number"><strong id="overallScore">--</strong><span>/ 80</span></div><p class="score-caption" id="recommendation">Calculating…</p></div>
+          <div class="score-meter" id="scoreMeter" role="img" aria-label="Overall score out of 80"><div><b id="scoreMeterNumber">--</b><span>signal</span></div></div>
+          <p class="model-note">A decision aid, not an investment recommendation.</p>
+        </article>
+        <article class="outlook-card glass-card"><p class="eyebrow">Listing scenario <span class="info-tip" data-tip="A scenario from the supplied valuation, demand and quality inputs. It is not a target or forecast.">?</span></p><div class="range-line"><span id="listingLow">--</span><div class="range-track"><i id="rangeStart"></i><b id="rangeMarker"></b></div><span id="listingHigh">--</span></div><strong id="listingBase">--</strong><p id="listingConfidence">Confidence: low</p></article>
+        <article class="time-card glass-card"><p class="eyebrow">Time horizon fit</p><div class="horizon-row"><span>Short</span><div><i id="shortBar"></i></div><b id="shortScore">--</b></div><div class="horizon-row"><span>Mid</span><div><i id="midBar"></i></div><b id="midScore">--</b></div><div class="horizon-row"><span>Long</span><div><i id="longBar"></i></div><b id="longScore">--</b></div></article>
+      </section>
+
+      <section class="bi-board" id="analytics" aria-label="Visual analytics">
+        <div class="section-heading wide"><div><p class="eyebrow">Visual analytics · Power BI style</p><h2>The numbers, at a glance</h2><p>Interactive infographics generated from the same deterministic model — no external BI tool required.</p></div></div>
+        <div class="kpi-row" id="kpiRow"></div>
+        <div class="bi-grid">
+          <article class="glass-card bi-card"><header><h3>Revenue vs profit</h3><span id="biTrendTag" class="bi-tag">₹ Cr</span></header><svg id="biTrend" viewBox="0 0 440 210" role="img" aria-label="Revenue versus profit trend"></svg></article>
+          <article class="glass-card bi-card"><header><h3>Subscription demand</h3><span class="bi-tag">× times</span></header><div class="donut-wrap"><svg id="biDonut" viewBox="0 0 200 200" role="img" aria-label="Subscription by investor category"></svg><div id="biDonutLegend" class="donut-legend"></div></div></article>
+          <article class="glass-card bi-card"><header><h3>Valuation vs peers</h3><span class="bi-tag">P/E ×</span></header><svg id="biPeers" viewBox="0 0 440 210" role="img" aria-label="P/E compared with peers"></svg></article>
+          <article class="glass-card bi-card"><header><h3>Score composition</h3><span class="bi-tag">/ 10 each</span></header><svg id="biRadar" viewBox="0 0 240 210" role="img" aria-label="Score by category"></svg></article>
+        </div>
+      </section>
+
+      <section class="section-grid overview-grid">
+        <article class="glass-card overview-card"><div class="section-heading"><div><p class="eyebrow">01 / Company overview</p><h2>What does this company do?</h2></div><span class="rounded-icon">⌁</span></div><p class="overview-text" id="businessModel">Loading business model…</p><div class="fact-grid" id="companyFacts"></div><div class="checkline"><span>✓</span><p>Business clarity is assessed from the disclosed model, revenue mix, customers and industry context—not a keyword score.</p></div></article>
+        <article class="glass-card ipo-card"><div class="section-heading"><div><p class="eyebrow">02 / Offer terms</p><h2>IPO details</h2></div><span class="rounded-icon">⌑</span></div><dl id="ipoFacts" class="offer-facts"></dl><div class="funds-box"><span>Use of funds</span><p id="useOfFunds">—</p></div></article>
+      </section>
+
+      <section class="section-block" id="financials">
+        <div class="section-heading wide"><div><p class="eyebrow">03 / Financial health</p><h2>Five years of operating momentum</h2><p>Figures are illustrative unless you import an RHP dataset. Currency is ₹ crore.</p></div><div class="legend"><span class="dot revenue"></span>Revenue <span class="dot profit"></span>Profit</div></div>
+        <article class="chart-card glass-card"><svg id="financialChart" viewBox="0 0 760 260" role="img" aria-label="Revenue and profit trend chart"></svg><div class="chart-metrics" id="financialMetrics"></div><div class="financial-table-wrap"><table><thead><tr><th id="finUnit">₹ Cr</th><th>Revenue</th><th>Profit</th><th>EBITDA</th><th>OCF</th><th>FCF</th><th>Debt</th></tr></thead><tbody id="financialTable"></tbody></table></div></article>
+      </section>
+
+      <section class="section-grid ratio-grid">
+        <article class="glass-card ratio-card"><div class="section-heading"><div><p class="eyebrow">04 / Ratio signals</p><h2>Health, at a glance</h2></div><span class="traffic-key"><i class="good"></i><i class="watch"></i><i class="risk"></i></span></div><div class="ratios" id="ratioList"></div><p class="tiny-note">Colour is a quick screen only. The exact thresholds are visible in Analysis breakdown.</p></article>
+        <article class="glass-card peer-card"><div class="section-heading"><div><p class="eyebrow">06–07 / Valuation & peers</p><h2>Value in context</h2></div><span class="rounded-icon">◫</span></div><p class="valuation-lede" id="valuationLine">—</p><div class="peer-table-wrap"><table><thead><tr id="peerHead"><th>Metric</th><th>IPO</th><th>Peer α</th><th>Peer β</th><th>Peer γ</th></tr></thead><tbody id="peerTable"></tbody></table></div></article>
+      </section>
+
+      <section class="section-grid risk-grid">
+        <article class="glass-card governance-card"><div class="section-heading"><div><p class="eyebrow">08 / Management & governance</p><h2>People and process</h2></div><span class="rounded-icon">◎</span></div><div id="governanceFacts" class="governance-list"></div><div class="governance-status"><span>✓</span><div><b id="governanceHeadline">Governance checks pending</b><p>Review the RHP’s related-party transactions, litigations, promoter history and auditor notes before making a decision.</p></div></div></article>
+        <article class="glass-card risk-card"><div class="section-heading"><div><p class="eyebrow">09 / Risk map</p><h2>Where this can go wrong</h2></div><span class="rounded-icon">△</span></div><div id="riskList" class="risk-list"></div><p class="tiny-note">Risks are never “cleared”; this view prioritises what needs your attention.</p></article>
+      </section>
+
+      <section class="section-grid market-grid">
+        <article class="glass-card sentiment-card"><div class="section-heading"><div><p class="eyebrow">10 / Market pulse</p><h2>Demand & conversation</h2></div><span class="live-dot">LIVE</span></div><div class="sentiment-main"><div class="sentiment-gauge"><div id="sentimentNumber">--</div><span>headline signal</span></div><div><strong id="sentimentLabel">Loading</strong><p id="sentimentDetail">—</p><a href="https://www.google.com/finance/" target="_blank" rel="noreferrer">Open Google Finance ↗</a></div></div><div class="subscription-grid" id="subscriptionGrid"></div><p class="source-line" id="newsSource">Source: local sample · For education only</p></article>
+        <article class="glass-card swot-card"><div class="section-heading"><div><p class="eyebrow">11 / SWOT</p><h2>Balanced view</h2></div><span class="rounded-icon">✦</span></div><div class="swot-grid"><div><span>S</span><p id="swotStrength">—</p></div><div><span>W</span><p id="swotWeakness">—</p></div><div><span>O</span><p id="swotOpportunity">—</p></div><div><span>T</span><p id="swotThreat">—</p></div></div></article>
+      </section>
+
+      <section class="verdict-section" id="verdict">
+        <div class="verdict-backdrop"></div><article class="verdict-card glass-card"><div class="verdict-top"><div><p class="eyebrow">12 / AI-free investment summary</p><h2 id="verdictTitle">—</h2></div><span class="verdict-score"><b id="verdictScore">--</b>/80</span></div><p class="plain-verdict" id="plainVerdict">—</p><div class="listing-gain glass-card" id="listingGainBox" hidden><div class="lg-head"><span class="eyebrow">Expected listing gain</span><b id="lgNumber">—</b></div><div class="lg-range"><span id="lgLow">—</span><div class="lg-track"><i id="lgFill"></i><b id="lgMarker"></b></div><span id="lgHigh">—</span></div><p class="lg-note" id="lgNote">—</p></div><div class="pros-cons"><div><span>What supports the case</span><ul id="prosList"></ul></div><div><span>What needs scrutiny</span><ul id="consList"></ul></div></div><details class="breakdown"><summary>Analysis breakdown <span>⌄</span></summary><div id="analysisBreakdown"></div></details><div class="ai-panel" id="aiPanel" hidden><div class="ai-head"><span class="rounded-icon">✳</span><div><p class="eyebrow">AI analyst read</p><p class="ai-sub">Reasons over the computed numbers above — it won't invent figures. Educational only, not advice.</p></div></div><div class="ai-actions"><button class="button primary" id="aiGo" type="button">Ask the AI analyst</button><button class="button ghost" id="aiBear" type="button">Bear case</button></div><div class="ai-out" id="aiOut" hidden></div></div></article>
+      </section>
+    </main>
+
+    <footer class="shell"><p>For education only — not investment advice. Investing in IPOs carries risk; read the RHP and consult a SEBI-registered adviser where appropriate.</p><p>Creator : Kota Mohith Kumar</p></footer>
+
+    <dialog id="importDialog"><form method="dialog" class="import-panel"><button class="dialog-close" value="cancel" aria-label="Close import dialog">×</button><p class="eyebrow">RHP evidence intake</p><h2>Paste text from an RHP</h2><p>For a no-premium, local workflow, copy relevant RHP text here. IPO Lens extracts visible offer labels and risk statements; confirm everything against the original document.</p><textarea id="rhpText" placeholder="Paste RHP text, offer terms, financial tables, or risk factor excerpts…"></textarea><div class="import-actions"><button class="button primary" id="extractRhp" type="button">Extract signals</button><button class="button ghost" value="cancel">Cancel</button></div><div id="extractionResult" class="extraction-result" aria-live="polite"></div><details class="structured-input"><summary>Load a verified IPO data file</summary><p>Use this when you have checked an RHP or filings. Paste an editable JSON object using the documented input shape, or choose a local .json file. It stays in this browser until you export it.</p><label for="ipoFile">IPO JSON file</label><input id="ipoFile" type="file" accept="application/json,.json" /><label for="ipoJson">Or paste IPO JSON</label><textarea id="ipoJson" placeholder='{"company":{"name":"…"},"ipo":{…},"financials":[…],"peers":[…]}'></textarea><button class="button primary" id="loadIpoData" type="button">Load verified data</button></details></form></dialog>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script>if (location.protocol === 'file:') { document.getElementById('fileModeNotice').hidden = false; document.getElementById('liveStatus').textContent = 'Preview mode — start the local service for live analysis'; }</script>
+    <script type="module" src="src/app.js"></script>
+  </body>
+</html>

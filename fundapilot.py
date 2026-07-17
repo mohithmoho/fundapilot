@@ -1115,7 +1115,7 @@ def ai_chat(system, user, max_tokens=900):
     endpoint (Groq/OpenRouter/OpenAI/Together) via AI_BASE_URL + AI_API_KEY (+ AI_MODEL)."""
     ak = _env("ANTHROPIC_API_KEY")
     if ak:
-        model = _env("AI_MODEL") or "claude-3-5-haiku-latest"
+        model = _env("AI_MODEL") or "claude-haiku-4-5"
         r = requests.post("https://api.anthropic.com/v1/messages",
                           headers={"x-api-key": ak, "anthropic-version": "2023-06-01", "content-type": "application/json"},
                           json={"model": model, "max_tokens": max_tokens,
@@ -2440,7 +2440,7 @@ details summary{cursor:pointer;color:var(--mut);font-size:13px}.disc{font-size:1
 #authbar{position:absolute;top:14px;right:16px;font-size:13px;display:flex;gap:8px;align-items:center}
 #authbar button{background:#0e1422;color:var(--acc);border:1px solid var(--line);padding:7px 12px;border-radius:10px;font-size:13px}
 @media(max-width:680px){#authbar{position:static;justify-content:center;margin-top:8px}}
-</style></head><body>
+</style><link rel="stylesheet" href="/static/lens-skin.css"></head><body>
 <div id="authbar"></div>
 <header>
   <div style="display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap">
@@ -2459,7 +2459,7 @@ details summary{cursor:pointer;color:var(--mut);font-size:13px}.disc{font-size:1
       <div class="sub" style="letter-spacing:2px;font-weight:600">ANALYZE · VALUE · OPTIMIZE</div>
     </div>
   </div>
-  <div class="sub" style="margin-top:6px">Institutional-grade equity research &amp; portfolio optimization · AI-powered valuation &amp; portfolio analytics · educational only · Indian &amp; global</div>
+  <div class="sub" style="margin-top:6px">All-in-one investment analysis — stocks · IPOs · mutual funds · portfolios · AI-powered, educational only · Indian &amp; global</div>
 </header>
 <div class="wrap">
 <div class="glass" style="padding:18px">
@@ -2471,6 +2471,8 @@ details summary{cursor:pointer;color:var(--mut);font-size:13px}.disc{font-size:1
     <div class="tab" data-tab="markets">Markets</div>
     <div class="tab" data-tab="watch">⭐ Watchlists</div>
     <div class="tab" data-tab="me" id="metab" style="display:none">My space</div>
+    <div class="tab" data-tab="ipolens" title="IPO research dashboard">🔭 IPO Lens</div>
+    <div class="tab" data-tab="mf" title="Mutual fund analyser">🪙 Mutual funds</div>
   </div>
   <div id="m-search" class="panel">
     <div class="full ac"><label>Company / ticker</label><input id="ticker" placeholder="Type e.g. Reliance, HAL, Apple…" autocomplete="off">
@@ -2488,6 +2490,8 @@ details summary{cursor:pointer;color:var(--mut);font-size:13px}.disc{font-size:1
   <div id="m-markets" style="display:none"></div>
   <div id="m-watch" style="display:none"></div>
   <div id="m-me" style="display:none"></div>
+  <div id="m-ipolens" class="panel" style="display:none;grid-template-columns:1fr"><iframe class="lens-frame" data-src="/ipolens/" title="IPO Lens"></iframe></div>
+  <div id="m-mf" class="panel" style="display:none;grid-template-columns:1fr"><iframe class="lens-frame" data-src="/mf/" title="Mutual Fund Lens"></iframe></div>
   <div id="filters" class="panel" style="margin-top:14px">
     <div><label>Time horizon</label><select id="horizon"><option value="short">Short (≤3y)</option><option value="medium" selected>Medium (3–7y)</option><option value="long">Long (7y+)</option></select></div>
     <div><label>Risk appetite</label><select id="risk"><option value="conservative">Conservative</option><option value="medium" selected>Medium</option><option value="aggressive">Aggressive</option></select></div>
@@ -2529,7 +2533,8 @@ function aiContext(d){return {name:d.name,ticker:d.ticker,sector:d.sector,indust
   recent_news:(d.news||[]).slice(0,6).map(n=>(n.source?n.source+': ':'')+n.title)};}
 let charts=[],mode='search',UNI={},MOD={};
 function setMode(m){mode=m;document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x.dataset.tab===m));
-  ['search','explore','models','track','markets','watch','me'].forEach(k=>el('m-'+k).style.display=k===m?(k==='search'||k==='explore'?'grid':'block'):'none');
+  ['search','explore','models','track','markets','watch','me','ipolens','mf'].forEach(k=>el('m-'+k).style.display=k===m?(k==='search'||k==='explore'?'grid':'block'):'none');
+  if(m==='ipolens'||m==='mf'){const fr=el('m-'+m).querySelector('iframe');if(fr&&!fr.getAttribute('src'))fr.setAttribute('src',fr.dataset.src);}
   el('filters').style.display=(m==='search'||m==='explore')?'grid':'none';
   el('out').style.display=(m==='search'||m==='explore')?'block':'none';  // keep single-stock analysis out of other tabs
   if(m==='models')renderModels();if(m==='track')renderTracker();if(m==='markets')renderMarkets();if(m==='watch')renderWatch();if(m==='me')renderMe();}
@@ -3464,6 +3469,173 @@ async function renderWatch(){const lists=['Buffett (quality)','High ROE (ROCE pr
     d.rows.forEach(r=>t+=`<tr><td>${r.name||r.ticker} <span class="muted">${r.ticker.replace('.NS','')}</span></td><td>${r.quality??'—'}</td><td>${fmt(r.pe)}</td><td>${fmt(r.pb)}</td><td>${fmt(r.roe)}</td><td>${fmt(r.div)}</td><td>${fmt(r.momentum_6m)}</td><td>${fmt(r.beta)}</td><td>${(r.tags||[]).map(x=>`<span class="tag">${x}</span>`).join('')}</td></tr>`);
     el('wl-out').innerHTML=t+'</table><p class="muted">"High ROE" stands in for ROCE (not in free Yahoo data).</p>';});}
 </script></body></html>"""
+
+
+
+# ============================== IPO Lens module (additive) ==============================
+# Serves the IPO Lens research dashboard from ./ipolens and mirrors the small API surface its
+# front-end expects — same contracts as the standalone Node server.mjs in the "IPO lens" folder.
+# Nothing above this line changed; deleting this block and the ipolens/ folder fully removes it.
+from flask import send_from_directory
+
+_IPOLENS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ipolens")
+_LENS_POS = ["beat", "growth", "record", "surge", "strong", "upbeat", "profit", "expansion", "wins", "approval", "oversubscribed", "demand"]
+_LENS_NEG = ["risk", "fall", "decline", "loss", "fraud", "probe", "lawsuit", "weak", "delay", "concern", "debt", "volatile"]
+_NSE_IPO_CACHE = {}
+
+@app.route("/ipolens/")
+def ipolens_index():
+    return send_from_directory(_IPOLENS_DIR, "index.html")
+
+@app.route("/ipolens/<path:asset>")
+def ipolens_asset(asset):
+    return send_from_directory(_IPOLENS_DIR, asset)
+
+@app.route("/ipolens/api/health")
+def ipolens_health():
+    return jresp({"ok": True, "time": time.strftime("%Y-%m-%dT%H:%M:%S"), "engine": "deterministic-v2-flask"})
+
+@app.route("/ipolens/api/news")
+def ipolens_news():
+    company = (request.args.get("company") or "").strip()
+    if len(company) < 2:
+        return jresp({"error": "Provide a company name."}, 400)
+    try:
+        items = google_news(company + " IPO OR shares", 8)
+        text = " ".join((i.get("title", "") + " " + str(i.get("source", i.get("src", "")))) for i in items).lower()
+        pos = sum(text.count(w) for w in _LENS_POS)
+        neg = sum(text.count(w) for w in _LENS_NEG)
+        score = max(0, min(100, 50 + (pos - neg) * 4))
+        label = "Constructive" if score >= 60 else ("Cautious" if score <= 40 else "Mixed")
+        articles = [{"title": i.get("title", ""), "source": str(i.get("source", i.get("src", ""))), "published": i.get("date", ""), "link": i.get("link", "")} for i in items]
+        return jresp({"source": "Google News RSS", "articles": articles,
+                      "sentiment": {"score": score, "label": label, "confidence": "medium" if len(items) >= 5 else "low"}})
+    except Exception as e:
+        return jresp({"source": "Google News RSS", "articles": [], "sentiment": {"score": 50, "label": "Unavailable", "confidence": "low"}, "warning": "Live news unavailable: %s" % e})
+
+@app.route("/ipolens/api/market")
+def ipolens_market():
+    sym = (request.args.get("symbol") or "").strip().upper()
+    if not re.match(r"^[A-Z0-9.^-]{1,24}$", sym):
+        return jresp({"source": "Yahoo Finance", "warning": "Use a valid Yahoo symbol, for example INFY.NS."})
+    try:
+        closes = yf.Ticker(sym).history(period="1mo", interval="1d")["Close"].dropna()
+        if len(closes) < 2:
+            raise ValueError("no usable close-price series")
+        last, prev = float(closes.iloc[-1]), float(closes.iloc[-2])
+        return jresp({"source": "Yahoo Finance", "symbol": sym, "lastClose": last, "previousClose": prev, "changePercent": (last / prev - 1) * 100})
+    except Exception as e:
+        return jresp({"source": "Yahoo Finance", "warning": "Market context unavailable: %s" % e})
+
+@app.route("/ipolens/api/rhp-extract", methods=["POST"])
+def ipolens_rhp_extract():
+    text = re.sub(r"\s+", " ", str((request.get_json(silent=True) or {}).get("text", ""))).strip()
+    def pick(pattern):
+        m = re.search(pattern, text, re.I)
+        return m.group(1).strip() if m and m.group(1) else None
+    return jresp({
+        "companyName": pick(r"(?:name of the company|company name)\s*[:\-]?\s*([A-Z][A-Za-z0-9 &,'.-]{2,80})"),
+        "priceBand": pick(r"price band\s*(?:of|:)?\s*((?:₹|Rs\.?)?\s*[\d,]+\s*(?:to|[-–])\s*(?:₹|Rs\.?)?\s*[\d,]+)"),
+        "issueSize": pick(r"(?:issue size|offer size)\s*(?:of|:)?\s*((?:₹|Rs\.?)?\s*[\d,.]+\s*(?:crore|million|lakh))"),
+        "lotSize": pick(r"lot size\s*(?:of|:)?\s*([\d,]+)"),
+        "useOfFunds": pick(r"(?:objects of the offer|use of proceeds)\s*[:\-]?\s*([^.]{30,240})"),
+        "risks": [m.group(1).strip() for m in list(re.finditer(r"(?:risk factor|risk)\s*[:\-]?\s*([^.]{20,180})", text, re.I))[:5]],
+        "note": "This parser extracts visible labels from copied RHP text. Confirm every value against the original RHP before acting.",
+    })
+
+@app.route("/ipolens/api/nse-subscription")
+def ipolens_nse_subscription():
+    sym = (request.args.get("symbol") or "").strip().upper()
+    if not re.match(r"^[A-Z0-9&-]{2,20}$", sym):
+        return jresp({"source": "NSE India (live)", "categories": [], "warning": "Provide a valid NSE IPO symbol."})
+    hit = _NSE_IPO_CACHE.get(sym)
+    if hit and time.time() - hit[0] < 240:
+        return jresp(hit[1])
+    try:
+        ses = requests.Session()
+        head = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36",
+                "Accept": "application/json", "Referer": "https://www.nseindia.com/"}
+        ses.get("https://www.nseindia.com/market-data/all-upcoming-issues-ipo", headers=dict(head, Accept="text/html"), timeout=8)
+        raw = ses.get("https://www.nseindia.com/api/ipo-active-category?symbol=" + urllib.parse.quote(sym), headers=head, timeout=8).json()
+        cats = []
+        def walk(node):
+            if isinstance(node, list):
+                for item in node:
+                    walk(item)
+            elif isinstance(node, dict):
+                label = next((v for v in node.values() if isinstance(v, str) and re.search(r"qib|qualified|non.?inst|nii|retail|rii|individual|employee|total", v, re.I)), None)
+                nums = []
+                for v in node.values():
+                    if isinstance(v, bool):
+                        continue
+                    if isinstance(v, (int, float)):
+                        nums.append(float(v))
+                    elif isinstance(v, str) and re.fullmatch(r"[\d.]+", v) and v.count(".") <= 1:
+                        nums.append(float(v))
+                num = next((n for n in nums if 0 <= n < 100000), None)
+                if label and num is not None:
+                    cats.append({"category": label, "times": num})
+                for v in node.values():
+                    walk(v)
+        walk(raw)
+        data = {"source": "NSE India (live)", "symbol": sym, "categories": cats}
+        _NSE_IPO_CACHE[sym] = (time.time(), data)
+        return jresp(data)
+    except Exception as e:
+        return jresp({"source": "NSE India (live)", "categories": [], "warning": "Live NSE subscription unavailable: %s" % e})
+
+@app.route("/ipolens/api/ai", methods=["GET", "POST"])
+def ipolens_ai():
+    """AI analyst for IPO Lens — same provider gate, rate caps and persona as /ai_analyst."""
+    off_note = "AI is off on this deployment. Set ANTHROPIC_API_KEY, or AI_BASE_URL + AI_API_KEY - see README."
+    if request.method == "GET":
+        return jresp({"enabled": ai_available(), "note": None if ai_available() else off_note})
+    if not ai_available():
+        return jresp({"enabled": False, "note": off_note})
+    ip = (request.headers.get("X-Forwarded-For", request.remote_addr or "?")).split(",")[0].strip()
+    ok, why = ai_rate_ok(ip)
+    if not ok:
+        return jresp({"enabled": True, "note": why}, 429)
+    d = request.get_json(force=True) or {}
+    ctx = json.dumps(d.get("context") or {})[:6500]
+    nl = chr(10)
+    if d.get("mode") == "bear":
+        user = (
+            "Play devil's advocate on this IPO - argue ONLY the BEAR CASE." + nl + nl
+            + "DETERMINISTIC ANALYSIS DATA:" + nl + ctx + nl + nl
+            + "Respond (plain text, concise):" + nl
+            + "BEAR THESIS: why this listing could disappoint" + nl
+            + "KEY DOWNSIDE RISKS: 3-4 bullets from the data" + nl
+            + "WHAT THE DEMAND NUMBERS MAY BE HIDING: 1-2 bullets (heavily oversubscribed IPOs have listed negative)" + nl
+            + "STRONGEST REASON TO SKIP: one line. Use only the data given plus general knowledge; do not invent numbers."
+        )
+    else:
+        user = (
+            "Act as my portfolio manager and make a call on this IPO from the deterministic analysis below." + nl + nl
+            + "ANALYSIS DATA:" + nl + ctx + nl + nl
+            + "Respond (plain text, concise):" + nl
+            + "DECISION: Subscribe for listing gains / Subscribe long-term / Neutral / Avoid" + nl
+            + "THESIS: 2-3 sentences" + nl
+            + "KEY RISKS: 3 bullets" + nl
+            + "WHAT WOULD CHANGE MY MIND: 1-2 bullets" + nl
+            + "CONFIDENCE: low/medium/high with one line of reasoning. "
+            + "Base the call only on the data above plus well-established general knowledge; never invent numbers; "
+            + "expected listing gains are statistical tendencies, not promises. Educational only, not investment advice."
+        )
+    try:
+        return jresp({"enabled": True, "text": ai_chat(AI_SYSTEM, user)})
+    except Exception as e:
+        return jresp({"enabled": False, "note": "AI request failed - " + str(e)[:300]}, 502)
+
+# ============================ end IPO Lens module (additive) ============================
+
+# ============================ Mutual Fund Lens module (additive) ============================
+try:
+    from mflens import mount_mflens
+    mount_mflens(app, jresp=jresp, ai_available=ai_available, ai_rate_ok=ai_rate_ok, ai_chat=ai_chat, ai_system=AI_SYSTEM)
+except Exception as _mf_exc:  # pragma: no cover
+    print("MF Lens disabled:", _mf_exc)
+# ========================== end Mutual Fund Lens module (additive) ==========================
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "selftest":

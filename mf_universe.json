@@ -1,0 +1,422 @@
+{
+  "asOf": "16 Jul 2026",
+  "note": "Scheme codes verified live against api.mfapi.in (AMFI data) on 16 Jul 2026. Manager/expense/AUM filled only where confirmed from public sources on the same date; null means verify on the AMC site. NAVs and all return metrics are fetched live at analysis time.",
+  "benchmark": {
+    "schemeCode": 120716,
+    "note": "UTI Nifty 50 Index Fund Direct Growth used as NIFTY 50 proxy"
+  },
+  "riskFreeRatePct": 6.5,
+  "funds": [
+    {
+      "schemeCode": 119091,
+      "name": "HDFC Liquid Fund - Growth Option - Direct Plan",
+      "fundHouse": "HDFC Mutual Fund",
+      "category": "Liquid",
+      "bucket": "debt-liquid",
+      "minHorizonYears": 0,
+      "riskLevels": [
+        "conservative",
+        "moderate"
+      ],
+      "manager": null,
+      "managerSince": null,
+      "expenseRatioPct": null,
+      "aumCr": null,
+      "source": null,
+      "verified": true
+    },
+    {
+      "schemeCode": 120197,
+      "name": "ICICI Prudential Liquid Fund - Direct Plan - Growth",
+      "fundHouse": "ICICI Prudential Mutual Fund",
+      "category": "Liquid",
+      "bucket": "debt-liquid",
+      "minHorizonYears": 0,
+      "riskLevels": [
+        "conservative",
+        "moderate"
+      ],
+      "manager": null,
+      "managerSince": null,
+      "expenseRatioPct": null,
+      "aumCr": null,
+      "source": null,
+      "verified": true
+    },
+    {
+      "schemeCode": 119800,
+      "name": "SBI Liquid Fund - DIRECT PLAN -Growth",
+      "fundHouse": "SBI Mutual Fund",
+      "category": "Liquid",
+      "bucket": "debt-liquid",
+      "minHorizonYears": 0,
+      "riskLevels": [
+        "conservative",
+        "moderate"
+      ],
+      "manager": null,
+      "managerSince": null,
+      "expenseRatioPct": null,
+      "aumCr": null,
+      "source": null,
+      "verified": true
+    },
+    {
+      "schemeCode": 119016,
+      "name": "HDFC Short Term  Debt Fund - Growth Option - Direct Plan",
+      "fundHouse": "HDFC Mutual Fund",
+      "category": "Short Duration Debt",
+      "bucket": "debt-short",
+      "minHorizonYears": 1,
+      "riskLevels": [
+        "conservative",
+        "moderate"
+      ],
+      "manager": null,
+      "managerSince": null,
+      "expenseRatioPct": null,
+      "aumCr": null,
+      "source": null,
+      "verified": true
+    },
+    {
+      "schemeCode": 120676,
+      "name": "ICICI Prudential Ultra Short Term Fund - Direct Plan -  Growth",
+      "fundHouse": "ICICI Prudential Mutual Fund",
+      "category": "Ultra Short Duration Debt",
+      "bucket": "debt-short",
+      "minHorizonYears": 1,
+      "riskLevels": [
+        "conservative",
+        "moderate"
+      ],
+      "manager": null,
+      "managerSince": null,
+      "expenseRatioPct": null,
+      "aumCr": null,
+      "source": null,
+      "verified": true
+    },
+    {
+      "schemeCode": 120616,
+      "name": "ICICI Prudential Regular Savings Fund - Direct Plan - Growth",
+      "fundHouse": "ICICI Prudential Mutual Fund",
+      "category": "Conservative Hybrid",
+      "bucket": "hybrid-conservative",
+      "minHorizonYears": 2,
+      "riskLevels": [
+        "conservative",
+        "moderate"
+      ],
+      "manager": null,
+      "managerSince": null,
+      "expenseRatioPct": null,
+      "aumCr": null,
+      "source": null,
+      "verified": true
+    },
+    {
+      "schemeCode": 119839,
+      "name": "SBI Conservative Hybrid Fund - Direct Plan - Growth",
+      "fundHouse": "SBI Mutual Fund",
+      "category": "Conservative Hybrid",
+      "bucket": "hybrid-conservative",
+      "minHorizonYears": 2,
+      "riskLevels": [
+        "conservative",
+        "moderate"
+      ],
+      "manager": null,
+      "managerSince": null,
+      "expenseRatioPct": null,
+      "aumCr": null,
+      "source": null,
+      "verified": true
+    },
+    {
+      "schemeCode": 118968,
+      "name": "HDFC Balanced Advantage Fund - Growth Plan - Direct Plan",
+      "fundHouse": "HDFC Mutual Fund",
+      "category": "Balanced Advantage",
+      "bucket": "hybrid-aggressive",
+      "minHorizonYears": 3,
+      "riskLevels": [
+        "moderate"
+      ],
+      "manager": null,
+      "managerSince": null,
+      "expenseRatioPct": 0.75,
+      "aumCr": null,
+      "source": "https://www.hdfcfund.com/explore/mutual-funds/hdfc-balanced-advantage-fund/direct",
+      "verified": true,
+      "holdings": [
+        {
+          "name": "HDFC Bank",
+          "pct": 4.48
+        },
+        {
+          "name": "ICICI Bank",
+          "pct": 4.09
+        },
+        {
+          "name": "Reliance Industries",
+          "pct": 3.67
+        },
+        {
+          "name": "State Bank of India",
+          "pct": 3.53
+        },
+        {
+          "name": "Bharti Airtel",
+          "pct": 2.93
+        }
+      ],
+      "holdingsAsOf": "31 Jan 2026 (AMC factsheet)",
+      "holdingsSource": "https://files.hdfcfund.com/s3fs-public/Others/2026-02/Fund%20Facts%20-%20HDFC%20Balanced%20Advantage%20Fund_February%2026.pdf"
+    },
+    {
+      "schemeCode": 120251,
+      "name": "ICICI Prudential Equity & Debt Fund - Direct Plan - Growth",
+      "fundHouse": "ICICI Prudential Mutual Fund",
+      "category": "Aggressive Hybrid",
+      "bucket": "hybrid-aggressive",
+      "minHorizonYears": 3,
+      "riskLevels": [
+        "moderate"
+      ],
+      "manager": null,
+      "managerSince": null,
+      "expenseRatioPct": null,
+      "aumCr": null,
+      "source": null,
+      "verified": true
+    },
+    {
+      "schemeCode": 120716,
+      "name": "UTI Nifty 50 Index Fund - Growth Option- Direct",
+      "fundHouse": "UTI Mutual Fund",
+      "category": "Large Cap Index (Nifty 50)",
+      "bucket": "largecap-index",
+      "minHorizonYears": 3,
+      "riskLevels": [
+        "moderate",
+        "aggressive"
+      ],
+      "manager": null,
+      "managerSince": null,
+      "expenseRatioPct": 0.18,
+      "aumCr": null,
+      "source": "https://groww.in/mutual-funds/uti-nifty-fund-direct-growth",
+      "verified": true,
+      "holdings": [
+        {
+          "name": "HDFC Bank",
+          "pct": 6.59
+        },
+        {
+          "name": "Bharti Airtel",
+          "pct": 6.22
+        },
+        {
+          "name": "ICICI Bank",
+          "pct": 5.22
+        }
+      ],
+      "holdingsAsOf": "10 Jul 2026 (Nifty 50 index weights)",
+      "holdingsSource": "https://www.smart-investing.in/indices-bse-nse.php?index=NIFTY"
+    },
+    {
+      "schemeCode": 120586,
+      "name": "ICICI Prudential Large Cap Fund (erstwhile Bluechip Fund) - Direct Plan - Growth",
+      "fundHouse": "ICICI Prudential Mutual Fund",
+      "category": "Large Cap (active)",
+      "bucket": "largecap-index",
+      "minHorizonYears": 3,
+      "riskLevels": [
+        "moderate",
+        "aggressive"
+      ],
+      "manager": null,
+      "managerSince": null,
+      "expenseRatioPct": null,
+      "aumCr": null,
+      "source": null,
+      "verified": true
+    },
+    {
+      "schemeCode": 122639,
+      "name": "Parag Parikh Flexi Cap Fund - Direct Plan - Growth",
+      "fundHouse": "PPFAS Mutual Fund",
+      "category": "Flexi Cap",
+      "bucket": "flexicap",
+      "minHorizonYears": 5,
+      "riskLevels": [
+        "moderate",
+        "aggressive"
+      ],
+      "manager": "Rajeev Thakkar (with Raj Mehta, Rukun Tarachandani)",
+      "managerSince": null,
+      "expenseRatioPct": 0.53,
+      "aumCr": 143388,
+      "source": "https://www.valueresearchonline.com/funds/19701/parag-parikh-flexi-cap-fund-direct-plan/",
+      "verified": true,
+      "holdings": [
+        {
+          "name": "Amazon",
+          "pct": 8.51
+        },
+        {
+          "name": "ITC",
+          "pct": 7.99
+        },
+        {
+          "name": "Alphabet",
+          "pct": 7.08
+        }
+      ],
+      "holdingsAsOf": "Jul 2026",
+      "holdingsSource": "https://www.thereader.ai/news/market/inside-parag-parikh-flexi-cap-fund-what-it-bought-and-sold-in-april-2026-top-10-holdings-revealed-6a1bd5ed31048b7889d2f328"
+    },
+    {
+      "schemeCode": 118955,
+      "name": "HDFC Flexi Cap Fund - Growth Option - Direct Plan",
+      "fundHouse": "HDFC Mutual Fund",
+      "category": "Flexi Cap",
+      "bucket": "flexicap",
+      "minHorizonYears": 5,
+      "riskLevels": [
+        "moderate",
+        "aggressive"
+      ],
+      "manager": null,
+      "managerSince": null,
+      "expenseRatioPct": null,
+      "aumCr": null,
+      "source": null,
+      "verified": true
+    },
+    {
+      "schemeCode": 127042,
+      "name": "Motilal Oswal Midcap Fund-Direct Plan-Growth Option",
+      "fundHouse": "Motilal Oswal Mutual Fund",
+      "category": "Mid Cap",
+      "bucket": "midcap",
+      "minHorizonYears": 5,
+      "riskLevels": [
+        "aggressive"
+      ],
+      "manager": "Niket Shah (CIO)",
+      "managerSince": null,
+      "expenseRatioPct": null,
+      "aumCr": null,
+      "source": "https://www.dezerv.in/mutual-funds/fund-manager/niket-shah/",
+      "verified": true,
+      "holdings": [
+        {
+          "name": "One97 (Paytm)",
+          "pct": 7.29
+        },
+        {
+          "name": "Coforge",
+          "pct": 6.12
+        },
+        {
+          "name": "Kalyan Jewellers",
+          "pct": 5.98
+        },
+        {
+          "name": "KEI Industries",
+          "pct": 5.61
+        }
+      ],
+      "holdingsAsOf": "Jul 2026",
+      "holdingsSource": "https://www.tickertape.in/mutualfunds/motilal-oswal-midcap-fund-M_MOLS"
+    },
+    {
+      "schemeCode": 125497,
+      "name": "SBI Small Cap Fund - Direct Plan - Growth",
+      "fundHouse": "SBI Mutual Fund",
+      "category": "Small Cap",
+      "bucket": "smallcap",
+      "minHorizonYears": 7,
+      "riskLevels": [
+        "aggressive"
+      ],
+      "manager": "Rama Iyer Srinivasan",
+      "managerSince": null,
+      "expenseRatioPct": 0.79,
+      "aumCr": 32286,
+      "source": "https://www.valueresearchonline.com/funds/15787/sbi-small-cap-fund-direct-plan/",
+      "verified": true,
+      "holdings": [
+        {
+          "name": "Ather Energy",
+          "pct": 5.18
+        },
+        {
+          "name": "Navin Fluorine",
+          "pct": 3.11
+        },
+        {
+          "name": "Honeywell Automation",
+          "pct": 2.83
+        }
+      ],
+      "holdingsAsOf": "Jun 2026",
+      "holdingsSource": "https://www.tickertape.in/mutualfunds/sbi-small-cap-fund-M_SBILM"
+    },
+    {
+      "schemeCode": 118778,
+      "name": "Nippon India Small Cap Fund - Direct Plan Growth Plan - Growth Option",
+      "fundHouse": "Nippon India Mutual Fund",
+      "category": "Small Cap",
+      "bucket": "smallcap",
+      "minHorizonYears": 7,
+      "riskLevels": [
+        "aggressive"
+      ],
+      "manager": null,
+      "managerSince": null,
+      "expenseRatioPct": null,
+      "aumCr": null,
+      "source": null,
+      "verified": true
+    },
+    {
+      "schemeCode": 135781,
+      "name": "Mirae Asset ELSS Tax Saver Fund - Direct Plan - Growth",
+      "fundHouse": "Mirae Asset Mutual Fund",
+      "category": "ELSS (3y lock-in)",
+      "bucket": "elss",
+      "minHorizonYears": 5,
+      "riskLevels": [
+        "moderate",
+        "aggressive"
+      ],
+      "manager": null,
+      "managerSince": null,
+      "expenseRatioPct": null,
+      "aumCr": null,
+      "source": null,
+      "verified": true
+    },
+    {
+      "schemeCode": 119242,
+      "name": "DSP ELSS Tax Saver Fund - Direct Plan - Growth",
+      "fundHouse": "DSP Mutual Fund",
+      "category": "ELSS (3y lock-in)",
+      "bucket": "elss",
+      "minHorizonYears": 5,
+      "riskLevels": [
+        "moderate",
+        "aggressive"
+      ],
+      "manager": null,
+      "managerSince": null,
+      "expenseRatioPct": null,
+      "aumCr": null,
+      "source": null,
+      "verified": true
+    }
+  ]
+}
