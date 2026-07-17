@@ -10,7 +10,9 @@ ai_chat=..., ai_system=...).  Self-check: `python mflens.py selftest` (offline m
 """
 import json
 import os
+import re
 import time
+from datetime import date
 
 import numpy as np
 import pandas as pd
@@ -51,6 +53,30 @@ SEBI_ALLOCATION = {
     "smallcap": {"label": "Small Cap — SEBI: ≥65% small-cap equity", "slices": [["Small-cap equity", 70], ["Other equity/cash", 30]]},
     "elss": {"label": "ELSS — SEBI: ≥80% equity, 3-year lock-in", "slices": [["Equity", 90], ["Cash & other", 10]]},
 }
+
+_MONTHS = {m: i + 1 for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"])}
+
+
+def _holdings_freshness(as_of, today=None):
+    """Age of a holdings snapshot, computed at request time so the card can never silently go stale.
+    SEBI requires AMCs to disclose portfolios monthly, so 0-1 months old is current; 2+ is behind."""
+    if not as_of:
+        return None
+    match = re.search(r"([A-Za-z]{3})[a-z]*\s+(\d{4})", as_of)
+    if not match or match.group(1).lower() not in _MONTHS:
+        return None
+    month, year = _MONTHS[match.group(1).lower()], int(match.group(2))
+    now = today or date.today()
+    months_old = (now.year - year) * 12 + (now.month - month)
+    if months_old < 0:
+        months_old = 0
+    label = "current month" if months_old == 0 else ("1 month old" if months_old == 1 else f"{months_old} months old")
+    stale = months_old >= 2
+    return {"asOf": as_of, "monthsOld": months_old, "stale": stale, "label": label,
+            "note": ("Portfolios are disclosed monthly - this snapshot is behind; open the source to see the current one."
+                     if stale else "Within the monthly disclosure cycle.")}
+
 
 _cache = {}
 
@@ -290,6 +316,7 @@ def _analyze(code, risk=None, horizon=None):
         "detailsAsOf": uni.get("asOf"), "detailsSource": entry.get("source"),
         "detailsNote": None if entry.get("manager") else "Manager/expense/AUM not verified here - check the AMC page.",
         "holdings": entry.get("holdings"), "holdingsAsOf": entry.get("holdingsAsOf"), "holdingsSource": entry.get("holdingsSource"),
+        "holdingsFreshness": _holdings_freshness(entry.get("holdingsAsOf")),
         "allocation": SEBI_ALLOCATION.get(entry.get("bucket")),
         "metrics": metrics,
         "verdict": _verdict(entry or {"category": meta.get("scheme_category"), "minHorizonYears": 0, "riskLevels": []},
@@ -585,9 +612,10 @@ $('#dMetrics').innerHTML=cells.map(([l,v,u,ek])=>`<div class="metric" tabindex="
 $('#dMgr').innerHTML=[['Fund manager',d.manager],['Manager since',d.managerSince],['Expense ratio (Direct)',d.expenseRatioPct==null?null:d.expenseRatioPct+'%'],['AUM',d.aumCr==null?null:'Rs '+Number(d.aumCr).toLocaleString('en-IN')+' Cr'],['Details as of',d.detailsAsOf],['Risk-free assumed',m.riskFreeAssumptionPct+'%']]
 .map(([k,v])=>`<div><span>${k}</span><b>${v==null?'&mdash;':esc(String(v))}</b></div>`).join('');
 $('#dMgrNote').textContent=d.detailsNote||'';
-if(d.holdings&&d.holdings.length){const sum=d.holdings.reduce((a,h)=>a+h.pct,0);
-$('#dHold').innerHTML=ring(d.holdings.map(h=>[h.name,h.pct]).concat([["Rest of portfolio",Math.round((100-sum)*100)/100]]),1);
-$('#dHoldNote').textContent='Top disclosed holdings as of '+(d.holdingsAsOf||'-')+' - full portfolio in the AMC factsheet.';}
+if(d.holdings&&d.holdings.length){const sum=d.holdings.reduce((a,h)=>a+h.pct,0);const fr=d.holdingsFreshness;
+$('#dHold').innerHTML=(fr?`<div style="margin-bottom:8px"><span class="fit ${fr.stale?'lo':'hi'}" style="float:none">${esc(fr.asOf)} &middot; ${esc(fr.label)}</span></div>`:'')
++ring(d.holdings.map(h=>[h.name,h.pct]).concat([["Rest of portfolio",Math.round((100-sum)*100)/100]]),1);
+$('#dHoldNote').innerHTML=(fr?esc(fr.note)+' ':'')+(d.holdingsSource?`<a href="${esc(d.holdingsSource)}" target="_blank" rel="noreferrer">Verify / see the full portfolio &#8599;</a>`:'Full portfolio in the AMC factsheet.');}
 else{$('#dHold').innerHTML='<p class="muted">Holdings not loaded for this scheme - see the AMC factsheet for the live portfolio.</p>';$('#dHoldNote').textContent='';}
 if(d.allocation){$('#dAlloc').innerHTML=ring(d.allocation.slices,0);$('#dAllocNote').textContent=d.allocation.label+' - regulatory envelope, not the live portfolio.';}
 else{$('#dAlloc').innerHTML='<p class="muted">Category mandate unavailable for non-curated schemes.</p>';$('#dAllocNote').textContent='';}
@@ -646,6 +674,18 @@ def _selftest():
     short = _backtest(steady, "sip", 10000, 0)
     assert "error" in short, "zero-year backtest must return an error, not crash"
     assert SEBI_ALLOCATION["elss"]["slices"][0][1] + SEBI_ALLOCATION["elss"]["slices"][1][1] == 100, "allocation slices must sum to 100"
+
+    # Holdings freshness ages against the real clock, so a snapshot can never silently look current.
+    today = date(2026, 7, 16)
+    assert _holdings_freshness("Jul 2026", today)["monthsOld"] == 0
+    assert _holdings_freshness("Jul 2026", today)["stale"] is False
+    assert _holdings_freshness("Jun 2026", today)["label"] == "1 month old"
+    assert _holdings_freshness("Jun 2026", today)["stale"] is False, "1 month is within the disclosure cycle"
+    jan = _holdings_freshness("31 Jan 2026 (AMC factsheet)", today)
+    assert jan["monthsOld"] == 6 and jan["stale"] is True, f"Jan snapshot must read 6 months stale, got {jan}"
+    assert _holdings_freshness("10 Jul 2026 (Nifty 50 index weights)", today)["monthsOld"] == 0
+    assert _holdings_freshness(None) is None and _holdings_freshness("garbage") is None
+    assert _holdings_freshness("Jan 2026", date(2027, 1, 1))["monthsOld"] == 12, "must age across year boundaries"
     print("mflens selftest: all offline math checks passed")
     try:
         payload = _analyze(120716)
