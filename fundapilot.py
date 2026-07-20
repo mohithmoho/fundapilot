@@ -2404,12 +2404,13 @@ label{display:block;font-size:12px;color:var(--mut);margin-bottom:5px}
 input,select{width:100%;padding:10px;border-radius:10px;border:1px solid var(--line);background:#0e1422;color:var(--txt);font-size:14px}
 button{padding:13px;border:0;border-radius:12px;cursor:pointer;font-size:15px;font-weight:600;color:#06122a;background:linear-gradient(90deg,#7db4ff,#b39bff)}
 button:disabled{opacity:.6;cursor:wait}.full{grid-column:1/-1}.hint{font-size:11px;color:var(--mut);margin-top:4px}
-.ac{position:relative}.acbox{position:absolute;z-index:9;left:0;right:0;top:100%;margin-top:4px;background:#0e1422;border:1px solid var(--line);border-radius:10px;overflow:hidden;display:none}
+.ac{position:relative;z-index:60}.acbox{position:absolute;z-index:1000;left:0;right:0;top:100%;margin-top:4px;background:#0e1422;border:1px solid var(--line);border-radius:10px;overflow:auto;max-height:320px;display:none}
 .acbox div{padding:9px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--line)}.acbox div:hover{background:#16243f}.acbox small{color:var(--mut)}
 section{margin-top:18px;padding:18px}h2{margin:0 0 12px;font-size:18px}h3{margin:14px 0 6px;font-size:14px;color:var(--mut)}
 .grid{display:grid;gap:12px}.cards{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}.two{grid-template-columns:1fr 1fr}@media(max-width:680px){.two{grid-template-columns:1fr}}
-.chip{padding:12px;border-radius:12px;border:1px solid var(--line);background:#0e1422}.chip b{display:block;font-size:20px;margin-top:2px}
+.chip{padding:12px;border-radius:12px;border:1px solid var(--line);background:#0e1422;min-width:0}.chip b{display:block;font-size:20px;margin-top:2px;overflow-wrap:anywhere}.grid>*{min-width:0}
 .muted{color:var(--mut);font-size:12px}.tag{display:inline-block;font-size:11px;padding:3px 9px;border-radius:20px;margin:2px;background:rgba(110,168,254,.15);color:var(--acc)}
+canvas{max-width:100%!important;height:auto!important}
 table{width:100%;border-collapse:collapse;font-size:14px}td,th{padding:8px 6px;border-bottom:1px solid var(--line);text-align:left}td:not(:first-child),th:not(:first-child){text-align:right}
 .verdict{display:inline-block;padding:6px 12px;border-radius:20px;font-weight:600}.v-under{background:rgba(57,217,138,.15);color:var(--good)}.v-over{background:rgba(255,107,107,.15);color:var(--bad)}.v-fair{background:rgba(255,209,102,.15);color:var(--warn)}
 .bar{height:8px;border-radius:6px;background:#0e1422;overflow:hidden}.bar>i{display:block;height:100%;border-radius:6px;background:linear-gradient(90deg,#ff6b6b,#ffd166,#39d98a)}
@@ -2419,10 +2420,10 @@ table{width:100%;border-collapse:collapse;font-size:14px}td,th{padding:8px 6px;b
 .tone-neg{color:var(--bad)}.tone-pos{color:var(--good)}a{color:var(--acc)}
 .spin{width:34px;height:34px;border:3px solid var(--line);border-top-color:var(--acc);border-radius:50%;margin:30px auto;animation:r 1s linear infinite}@keyframes r{to{transform:rotate(360deg)}}
 details summary{cursor:pointer;color:var(--mut);font-size:13px}.disc{font-size:11px;color:var(--mut);text-align:center;padding:20px}
-.kv{margin:6px 0}.kv b{color:var(--txt)}.rec{font-size:16px;line-height:1.6;padding:14px;border-radius:12px;background:linear-gradient(90deg,rgba(110,168,254,.12),rgba(179,155,255,.12));border:1px solid var(--line)}
+.kv{margin:6px 0;overflow-wrap:anywhere}.kv b{color:var(--txt)}.rec{font-size:16px;line-height:1.6;padding:14px;border-radius:12px;background:linear-gradient(90deg,rgba(110,168,254,.12),rgba(179,155,255,.12));border:1px solid var(--line)}
 .news{max-height:320px;overflow:auto}.pos{color:var(--good)}.neg{color:var(--bad)}
-.tip{border-bottom:1px dotted var(--mut);cursor:help}
-.tip:hover::after{content:attr(data-tip);position:absolute;left:auto;margin-top:18px;margin-left:-8px;z-index:30;max-width:260px;background:#0e1422;border:1px solid var(--acc);border-radius:8px;padding:9px 11px;font-size:12px;font-weight:400;line-height:1.45;color:var(--txt);white-space:normal;box-shadow:0 8px 24px rgba(0,0,0,.5)}
+.tip{border-bottom:1px dotted var(--mut);cursor:help;position:relative}
+.tip:hover::after{content:attr(data-tip);position:absolute;top:100%;left:0;margin-top:6px;z-index:99;max-width:260px;background:#0e1422;border:1px solid var(--acc);border-radius:8px;padding:9px 11px;font-size:12px;font-weight:400;line-height:1.45;color:var(--txt);white-space:normal;box-shadow:0 8px 24px rgba(0,0,0,.5)}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}.seg button{background:#0e1422;color:var(--mut);border:0;padding:8px 16px;font-weight:600;border-radius:0}.seg button.on{background:linear-gradient(90deg,#7db4ff,#b39bff);color:#06122a}
 .dl{background:#0e1422;color:var(--acc);border:1px solid var(--line);padding:9px 13px;border-radius:10px;font-size:13px;margin:3px}
 /* mobile: let wide tables scroll inside their card instead of being clipped (desktop unchanged) */
@@ -2430,9 +2431,10 @@ details summary{cursor:pointer;color:var(--mut);font-size:13px}.disc{font-size:1
   .wrap{padding:10px}section{padding:14px}h1{font-size:24px}
   .cards{grid-template-columns:repeat(auto-fit,minmax(130px,1fr))}
   .panel{grid-template-columns:1fr 1fr}
-  .glass{overflow-x:auto}
   table{display:block;width:auto;min-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:nowrap;font-size:13px}
   td,th{padding:7px 5px}
+  td.wrapcell{white-space:normal;min-width:200px}
+  table .tip:hover::after{display:none}
   .rec{font-size:14px}
 }
 @media(max-width:420px){.cards,.panel{grid-template-columns:1fr}}
@@ -2849,7 +2851,7 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
   // Management & MD&A — collapsible
   out.append($(`<section class="glass"><details><summary style="font-size:18px;font-weight:600;cursor:pointer">Management &amp; MD&amp;A</summary>
     <div style="margin-top:10px">
-      ${(d.officers&&d.officers.length)?`<h3 style="margin-top:0">Key people</h3><table><tr><th>Name</th><th>Title</th><th>Age</th><th>Pay</th></tr>${d.officers.map(o=>`<tr><td>${esc(o.name||'')}</td><td>${esc(o.title||'')}</td><td>${o.age||'—'}</td><td>${o.pay?cur+fmt(o.pay):'—'}</td></tr>`).join('')}</table>`:'<p class="muted">Management roster not in the data feed — use the primary sources below.</p>'}
+      ${(d.officers&&d.officers.length)?`<h3 style="margin-top:0">Key people</h3><table><tr><th>Name</th><th>Title</th><th>Age</th><th>Pay</th></tr>${d.officers.map(o=>`<tr><td class="wrapcell">${esc(o.name||'')}</td><td class="wrapcell">${esc(o.title||'')}</td><td>${o.age||'—'}</td><td>${o.pay?cur+fmt(o.pay):'—'}</td></tr>`).join('')}</table>`:'<p class="muted">Management roster not in the data feed — use the primary sources below.</p>'}
       <p class="muted" style="margin-top:8px">Primary sources: ${(d.references||[]).map(r=>`<a href="${safeUrl(r.url)}" target="_blank" rel="noopener noreferrer">${esc(r.label.split(' —')[0].split(' (')[0])}</a>`).join(' · ')}</p>
       ${window.AI_ON?`<button class="dl" id="ai-mda">Generate management discussion &amp; analysis (MD&amp;A)</button><div id="ai-mda-out" style="margin-top:8px"></div>`:'<p class="muted">Enable the AI analyst to auto-write an MD&A here so you need not read the full annual report.</p>'}
     </div></details></section>`));
@@ -2935,13 +2937,13 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
     <div class="kv">Cash flow: <b>${money(cur,val.fcf,null)}</b> <span class="muted">via ${esc(val.fcf_source||'n/a')} — falls back to Operating CF − Capex, then 0.9×PAT if Yahoo FCF is missing</span></div>
     <h3>Every technique, side by side — pick the lens you trust</h3>
     <table><tr><th>Technique</th><th style="text-align:left">Key inputs</th><th>Output</th><th>vs market</th><th>Read</th></tr>
-      <tr><td>DCF (cash-flow)</td><td style="text-align:left;font-size:12px">FCF grown at ${val.growth_used_pct}%, discounted ${val.discount_pct}%, terminal 3%, ${val.proj_years}y</td><td>${money(cur,val.fair_value_mktcap,null)}</td><td>${val.margin_of_safety_pct==null?'—':val.margin_of_safety_pct+'%'}</td><td><span class="verdict ${vcls(val.dcf_verdict)}">${val.dcf_verdict}</span></td></tr>
-      <tr><td>Reverse DCF</td><td style="text-align:left;font-size:12px">solves the growth that justifies today's mkt cap at the same ${val.discount_pct}% discount</td><td>${val.implied_growth_pct==null?'—':val.implied_growth_pct+'%/yr implied'}</td><td>vs ${val.growth_used_pct}% assumed</td><td style="font-size:12px">${revRead}</td></tr>
-      ${val.scenarios&&val.scenarios.Bear?`<tr><td>Scenario DCF</td><td style="text-align:left;font-size:12px">growth ±3%, discount ∓1–2% (bear/base/bull)</td><td>${money(cur,val.scenarios.Bear.fair_value,null)} – ${money(cur,val.scenarios.Bull?val.scenarios.Bull.fair_value:null,null)}</td><td>${val.scenarios.Bear.mos_pct}% to ${val.scenarios.Bull?val.scenarios.Bull.mos_pct:'—'}%</td><td style="font-size:12px">a value RANGE, not one point</td></tr>`:''}
-      <tr><td>Growth-adjusted P/E (Lynch)</td><td style="text-align:left;font-size:12px">fair P/E = 8 + 0.9×growth, +10% if ROE&gt;18%, +5% if D/E&lt;40</td><td>${lynchFV?money(cur,lynchFV,null):'—'}</td><td>${val.pe_gap_pct==null?'—':val.pe_gap_pct+'%'}</td><td style="font-size:12px">${esc(val.pe_growth_verdict||'—')}</td></tr>
-      <tr><td>PEG ratio</td><td style="text-align:left;font-size:12px">P/E ÷ growth; &lt;1 cheap · ~1 fair · &gt;2 rich</td><td>${val.peg==null?'—':val.peg}</td><td>—</td><td style="font-size:12px">${pegRead}</td></tr>
-      <tr><td>Graham number</td><td style="text-align:left;font-size:12px">√(22.5 × EPS × BVPS) — Ben Graham's conservative fair price</td><td>${gvv?cur+fmt(gvv)+'/share':'—'}</td><td>${gvPct==null?'—':gvPct+'%'}</td><td><span class="verdict ${vcls(gvVerdict)}">${gvVerdict}</span></td></tr>
-      <tr><td>Peer P/E (relative)</td><td style="text-align:left;font-size:12px">re-prices earnings at the sector's median P/E</td><td colspan="3" id="valtech-peer" class="muted" style="text-align:left">loading industry P/E…</td></tr>
+      <tr><td>DCF (cash-flow)</td><td class="wrapcell" style="text-align:left;font-size:12px">FCF grown at ${val.growth_used_pct}%, discounted ${val.discount_pct}%, terminal 3%, ${val.proj_years}y</td><td>${money(cur,val.fair_value_mktcap,null)}</td><td>${val.margin_of_safety_pct==null?'—':val.margin_of_safety_pct+'%'}</td><td><span class="verdict ${vcls(val.dcf_verdict)}">${val.dcf_verdict}</span></td></tr>
+      <tr><td>Reverse DCF</td><td class="wrapcell" style="text-align:left;font-size:12px">solves the growth that justifies today's mkt cap at the same ${val.discount_pct}% discount</td><td>${val.implied_growth_pct==null?'—':val.implied_growth_pct+'%/yr implied'}</td><td>vs ${val.growth_used_pct}% assumed</td><td style="font-size:12px">${revRead}</td></tr>
+      ${val.scenarios&&val.scenarios.Bear?`<tr><td>Scenario DCF</td><td class="wrapcell" style="text-align:left;font-size:12px">growth ±3%, discount ∓1–2% (bear/base/bull)</td><td>${money(cur,val.scenarios.Bear.fair_value,null)} – ${money(cur,val.scenarios.Bull?val.scenarios.Bull.fair_value:null,null)}</td><td>${val.scenarios.Bear.mos_pct}% to ${val.scenarios.Bull?val.scenarios.Bull.mos_pct:'—'}%</td><td style="font-size:12px">a value RANGE, not one point</td></tr>`:''}
+      <tr><td>Growth-adjusted P/E (Lynch)</td><td class="wrapcell" style="text-align:left;font-size:12px">fair P/E = 8 + 0.9×growth, +10% if ROE&gt;18%, +5% if D/E&lt;40</td><td>${lynchFV?money(cur,lynchFV,null):'—'}</td><td>${val.pe_gap_pct==null?'—':val.pe_gap_pct+'%'}</td><td style="font-size:12px">${esc(val.pe_growth_verdict||'—')}</td></tr>
+      <tr><td>PEG ratio</td><td class="wrapcell" style="text-align:left;font-size:12px">P/E ÷ growth; &lt;1 cheap · ~1 fair · &gt;2 rich</td><td>${val.peg==null?'—':val.peg}</td><td>—</td><td style="font-size:12px">${pegRead}</td></tr>
+      <tr><td>Graham number</td><td class="wrapcell" style="text-align:left;font-size:12px">√(22.5 × EPS × BVPS) — Ben Graham's conservative fair price</td><td>${gvv?cur+fmt(gvv)+'/share':'—'}</td><td>${gvPct==null?'—':gvPct+'%'}</td><td><span class="verdict ${vcls(gvVerdict)}">${gvVerdict}</span></td></tr>
+      <tr><td>Peer P/E (relative)</td><td class="wrapcell" style="text-align:left;font-size:12px">re-prices earnings at the sector's median P/E</td><td colspan="3" id="valtech-peer" class="muted wrapcell" style="text-align:left">loading industry P/E…</td></tr>
     </table>
     <p class="muted" style="margin-top:8px">Different lenses suit different styles: Graham/DCF for conservative value, Lynch/PEG for growth, peer P/E for relative calls, scenario DCF for a range. The headline verdict blends DCF + growth-adjusted P/E + PEG so no single lens dominates. Under/Overvalued cutoffs: ±20% vs market.</p>
     </div></details></section>`));
@@ -2974,7 +2976,7 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
     const disp=o.value==null?'—':(o.inr!==undefined?money(cur,o.value,o.inr):(u==='%'?o.value+'%':u==='x'?o.value+'x':o.value));
     const meaning=o.text?`<span class="dot d-${o.rating}"></span>${o.text}${o.bench?' <span class="muted">('+o.bench+')</span>':''}`:'<span class="muted">—</span>';
     const aiex=window.AI_ON?` <a href="#" class="aiex" data-m="${esc(k)}" data-v="${o.value==null?'':o.value}" title="AI explain for this company" style="text-decoration:none"></a>`:'';
-    rt+=`<tr><td>${tip(k)}${aiex}</td><td>${disp}</td><td style="text-align:left;font-size:12px">${meaning}</td></tr>`;}
+    rt+=`<tr><td>${tip(k)}${aiex}</td><td>${disp}</td><td class="wrapcell" style="text-align:left;font-size:12px">${meaning}</td></tr>`;}
   out.append($(rt+'</table><div id="aiex-out"></div><p class="muted">🟢 good · 🟡 ok · 🔴 watch. Benchmarks are general rules of thumb; compare within the same sector.</p></section>'));
   if(window.AI_ON){const ctx2=aiContext(d);document.querySelectorAll('.aiex').forEach(a=>a.onclick=async e=>{e.preventDefault();
     const m=a.dataset.m,v=a.dataset.v,box=el('aiex-out');box.innerHTML=`<div class="flag" style="background:rgba(110,168,254,.1)"><div class="spin" style="margin:6px auto"></div><div class="muted" style="text-align:center">AI explaining ${esc(m)}…</div></div>`;
@@ -3053,7 +3055,7 @@ function render(d){const cur=d.currency;out.innerHTML='';window.LAST=d;window.LA
   const m=d.methodology;
   let pf='<section class="glass"><h2>How this was calculated (proof)</h2>';
   pf+=`<div class="kv"><b>Ratios.</b> ${m.ratios_source}</div>`;
-  pf+=`<div class="kv"><b>Free cash flow.</b> ${money(cur,m.fcf.value,null)} via ${m.fcf.source}. ${Object.keys(m.fcf.components||{}).length?'Components: '+JSON.stringify(m.fcf.components):''}</div>`;
+  pf+=`<div class="kv"><b>Free cash flow.</b> ${money(cur,m.fcf.value,null)} via ${m.fcf.source}. ${Object.keys(m.fcf.components||{}).length?'Components: '+Object.entries(m.fcf.components).map(([k,v])=>k.replace(/_/g,' ')+' '+cur+fmt(v)).join(' · '):''}</div>`;
   pf+=`<div class="kv"><b>DCF.</b> ${m.dcf.formula}<br>Inputs → FCF ${money(cur,m.dcf.fcf,null)}, growth ${m.dcf.growth_pct}%, discount ${m.dcf.discount_pct}%, ${m.dcf.years}y, terminal ${m.dcf.terminal_growth_pct}% ⇒ fair value ${money(cur,m.dcf.fair_value,null)}.</div>`;
   pf+=`<div class="kv"><b>Reverse DCF.</b> Implied growth ${m.reverse_dcf.implied_growth_pct}% — ${m.reverse_dcf.meaning}</div>`;
   pf+=`<div class="kv"><b>FX.</b> ${m.fx_used.pair} = ${m.fx_used.rate}</div>`;
