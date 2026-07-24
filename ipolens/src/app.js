@@ -1,4 +1,4 @@
-import { sampleIpo, ipoDirectory } from './data.js';
+import { sampleIpo, ipoDirectory, thin, NOT_DISCLOSED } from './data.js';
 import { computeAssessment } from './analysis-core.js';
 
 let ipo = structuredClone(sampleIpo);
@@ -121,7 +121,7 @@ function updateSentiment(source = 'local sample') {
 }
 
 function updateVerdict() {
-  $('#verdictTitle').textContent = report.score.recommendation; $('#verdictScore').textContent = fmt(report.score.total, 1); $('#plainVerdict').textContent = report.verdict.plain;
+  $('#verdictTitle').textContent = report.score.recommendation; $('#verdictScore').textContent = (ipo.financials || []).length ? fmt(report.score.total, 1) : '—'; $('#plainVerdict').textContent = report.verdict.plain;
   const pros = [`Revenue CAGR of ${pct(report.metrics.revenueCagr)} with ${pct(report.metrics.cashFlowPositive,0)} positive operating-cash-flow years`, `ROCE of ${pct(report.metrics.roce)} and EBITDA margin of ${pct(report.metrics.ebitdaMargin)}`, report.metrics.valuationPremium <= 10 ? 'Valuation is close to the selected peer range.' : 'Use-of-funds includes productive business investment.'];
   const cons = [report.metrics.valuationPremium > 10 ? `P/E is ${pct(report.metrics.valuationPremium,0)} above the selected peer median.` : 'Peer valuation should be updated at launch.', ...ipo.risks.filter(r => r.level !== 'low').slice(0,2).map(r => r.label), 'Demand data and headlines can change quickly.'];
   $('#prosList').innerHTML = pros.map(item => `<li>${item}</li>`).join(''); $('#consList').innerHTML = cons.map(item => `<li>${item}</li>`).join('');
@@ -270,7 +270,51 @@ function filterDirectory() {
   box.classList.add('open');
   box.innerHTML = hits.length
     ? hits.slice(0, 8).map(r => `<button class="result-row" data-ipo="${r.id}" role="option"><span class="r-name">${r.company.name}</span><span class="r-tag">${r.exchange}</span><span class="r-sector">${r.company.industry}</span>${chip(r.status)}</button>`).join('')
-    : '<p class="no-hit">No match in the local directory. To analyse any other IPO, open <b>Import RHP text → Load a verified IPO data file</b> and paste its JSON.</p>';
+    : '<p class="no-hit">Searching live NSE IPOs…</p>';
+  liveSearch(query);
+}
+
+/* ---------- Live NSE directory: every IPO your broker app lists ---------- */
+let liveTimer, liveHits = [];
+function liveSearch(query) {
+  clearTimeout(liveTimer);
+  if (!query || query.length < 2) return;
+  liveTimer = setTimeout(async () => {
+    try {
+      const r = await fetch(`${apiBase}/ipo-directory?q=${encodeURIComponent(query)}`);
+      const d = await r.json();
+      liveHits = d.rows || [];
+      const box = $('#searchResults');
+      const known = new Set(ipoDirectory.flatMap(x => [x.company.name.toLowerCase(), (x.nseSymbol || '').toLowerCase()]));
+      const fresh = liveHits.filter(r2 => !known.has(r2.name.toLowerCase()) && !known.has(r2.symbol.toLowerCase()));
+      if (!fresh.length) { if (box.querySelector('.no-hit')) box.querySelector('.no-hit').innerHTML = d.warning || 'No live NSE match for that name.'; return; }
+      box.classList.add('open');
+      const hit = box.querySelector('.no-hit'); if (hit) hit.remove();
+      box.insertAdjacentHTML('beforeend',
+        `<p class="no-hit">${fresh.length} more from NSE</p>` +
+        fresh.slice(0, 8).map(r2 => `<button class="result-row" data-live="${r2.symbol}" role="option"><span class="r-name">${r2.name}</span><span class="r-tag">${r2.exchange}${r2.board ? ' ' + r2.board : ''}</span><span class="r-sector">${r2.priceBand || ''}</span>${chip(r2.status)}</button>`).join(''));
+    } catch { /* offline — seeded directory already rendered */ }
+  }, 250);
+}
+function loadLiveIpo(symbol) {
+  const r = liveHits.find(x => x.symbol === symbol);
+  if (!r) return;
+  ipo = thin({
+    id: 'live-' + r.symbol.toLowerCase(), status: r.status, exchange: r.exchange, board: r.board || 'Mainboard',
+    openDate: r.openDate || 'See RHP', closeDate: r.closeDate || 'See RHP', currency: '₹', unit: 'Cr',
+    dataAsOf: new Date().toISOString().slice(0, 10), aliases: [r.symbol], nseSymbol: r.symbol,
+    sources: { note: `Live NSE offer terms for ${r.symbol}. Verify against the SEBI-filed RHP.` },
+    company: { name: r.name },
+    ipo: { priceBand: r.priceBand || NOT_DISCLOSED, issueSize: r.issueSize || (r.sharesOffered ? `${r.sharesOffered} shares offered` : NOT_DISCLOSED),
+           freshIssue: NOT_DISCLOSED, ofs: NOT_DISCLOSED, listingDate: r.listingDate || NOT_DISCLOSED,
+           lotSize: r.lotSize || NOT_DISCLOSED, minimumInvestment: NOT_DISCLOSED, useOfFunds: NOT_DISCLOSED, pe: 0 },
+  });
+  report = computeAssessment(ipo);
+  render();
+  $('#aiOut').hidden = true; $('#aiOut').textContent = '';
+  refreshLiveSubscription();
+  toast(`${r.name} — live from NSE`);
+  $('#overview').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 /* ---------- Power BI-style visuals (drawn from the same deterministic report) ---------- */
@@ -407,11 +451,14 @@ $('#ipoSearch').addEventListener('keydown', (event) => {
   if (hit) { loadIpoById(hit.id); $('#searchResults').classList.remove('open'); }
 });
 document.addEventListener('click', (event) => {
+  const liveRow = event.target.closest('[data-live]');
+  if (liveRow) { loadLiveIpo(liveRow.dataset.live); $('#searchResults').classList.remove('open'); return; }
   const card = event.target.closest('[data-ipo]');
   if (!card) return;
   loadIpoById(card.dataset.ipo);
   $('#searchResults').classList.remove('open');
 });
+$('#ipoSearchBtn').addEventListener('click', filterDirectory);
 fetch(`${apiBase}/health`).then(res => res.json()).then(data => { $('#liveStatus').textContent = `Local model online · ${new Date(data.time).toLocaleTimeString()}`; }).catch(() => { $('#liveStatus').textContent = 'Offline mode · local sample'; });
 $('#aiGo').addEventListener('click', () => askAi('ipo'));
 $('#aiBear').addEventListener('click', () => askAi('bear'));

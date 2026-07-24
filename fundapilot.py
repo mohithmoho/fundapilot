@@ -16,6 +16,7 @@ import os
 import sys
 import re
 import math
+import difflib
 import json
 import time
 import urllib.parse
@@ -3585,6 +3586,97 @@ def ipolens_nse_subscription():
         return jresp(data)
     except Exception as e:
         return jresp({"source": "NSE India (live)", "categories": [], "warning": "Live NSE subscription unavailable: %s" % e})
+
+_IPO_DIR_CACHE = {}
+
+
+def _nse_session():
+    """Cookie-primed NSE session — their APIs 401 without a prior HTML hit."""
+    ses = requests.Session()
+    head = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36",
+            "Accept": "application/json", "Referer": "https://www.nseindia.com/"}
+    ses.get("https://www.nseindia.com/market-data/all-upcoming-issues-ipo", headers=dict(head, Accept="text/html"), timeout=8)
+    return ses, head
+
+
+def _pick(d, *needles):
+    """First value whose key contains any needle (case-insensitive) - NSE renames fields often."""
+    for k, v in d.items():
+        kl = k.lower()
+        if any(n in kl for n in needles) and v not in (None, "", "-"):
+            return str(v).strip()
+    return ""
+
+
+def _ipo_rows():
+    """Every IPO NSE currently publishes: upcoming, open now, and recently listed."""
+    hit = _IPO_DIR_CACHE.get("rows")
+    if hit and time.time() - hit[0] < 900:
+        return hit[1]
+    rows, seen = [], set()
+    try:
+        ses, head = _nse_session()
+        # NSE splits mainboard vs SME (EMERGE) by endpoint; past issues carry no board flag.
+        feeds = [("upcoming", "Mainboard", "https://www.nseindia.com/api/all-upcoming-issues?category=ipo"),
+                 ("upcoming", "SME", "https://www.nseindia.com/api/all-upcoming-issues?category=sme"),
+                 ("open", "Mainboard", "https://www.nseindia.com/api/ipo-current-issue"),
+                 ("listed", "", "https://www.nseindia.com/api/public-past-issues")]
+        for status, board, url in feeds:
+            try:
+                data = ses.get(url, headers=head, timeout=8).json()
+            except Exception:
+                continue
+            for item in (data.get("data") if isinstance(data, dict) else data) or []:
+                if not isinstance(item, dict):
+                    continue
+                name = _pick(item, "companyname", "company", "issuename", "name")
+                sym = _pick(item, "symbol")
+                if not name and not sym:
+                    continue
+                key = (sym or name).upper()
+                if key in seen:
+                    continue
+                seen.add(key)
+                size = _pick(item, "issuesize", "totalissue")
+                rows.append({"symbol": sym.upper(), "name": name or sym,
+                             "status": status, "exchange": "NSE", "board": board,
+                             "openDate": _pick(item, "issuestartdate", "startdate", "biddingstartdate"),
+                             "closeDate": _pick(item, "issueenddate", "enddate", "biddingenddate"),
+                             "priceBand": _pick(item, "pricerange", "priceband", "issueprice"),
+                             # NSE's issueSize here is a SHARE COUNT, not rupees - don't render it as money.
+                             "sharesOffered": size if size.replace(".", "").isdigit() else "",
+                             "issueSize": "" if size.replace(".", "").isdigit() else size,
+                             "listingDate": _pick(item, "listingdate"),
+                             "lotSize": _pick(item, "lotsize", "marketlot", "minbidquantity")})
+    except Exception:
+        pass
+    _IPO_DIR_CACHE["rows"] = (time.time(), rows)
+    return rows
+
+
+@app.route("/ipolens/api/ipo-directory")
+def ipolens_ipo_directory():
+    """Live NSE IPO directory with typo-tolerant search, so any IPO shown in a broker app is findable."""
+    q = (request.args.get("q") or "").strip().lower()
+    rows = _ipo_rows()
+    if q:
+        def sc(r):
+            hay = (r["name"] + " " + r["symbol"]).lower()
+            if hay.startswith(q) or r["symbol"].lower() == q:
+                return 1.0
+            if q in hay:
+                return 0.95
+            words = hay.split()
+            # word-prefix beats a loose whole-string ratio (typo tolerance without the noise)
+            best = max([difflib.SequenceMatcher(None, q, w).ratio() for w in words] or [0])
+            if any(w.startswith(q[:4]) for w in words if len(q) >= 4):
+                best = max(best, 0.8)
+            return best
+        rows = sorted(((sc(r), r) for r in rows), key=lambda p: -p[0])
+        rows = [r for s2, r in rows if s2 >= 0.72]
+    return jresp({"source": "NSE India (live)", "count": len(rows), "rows": rows[:24],
+                  "warning": "" if rows else "No live NSE match. NSE publishes NSE-listed issues only; for a BSE-only SME IPO use Import RHP text."})
+
 
 @app.route("/ipolens/api/ai", methods=["GET", "POST"])
 def ipolens_ai():

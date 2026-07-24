@@ -4,9 +4,9 @@
 // refresh where a symbol is known and falls back to these values. Verify against the RHP before acting.
 // ponytail: static seed + live-refresh hook, not a full market-data pipeline. Upgrade: cached vendor adapter.
 
-const NOT_DISCLOSED = 'Not disclosed yet';
+export const NOT_DISCLOSED = 'Not disclosed yet';
 // Fills the identity/governance shape the UI expects so thin (offer-terms-only) records never break rendering.
-const thin = (record) => ({
+export const thin = (record) => ({
   businessScore: 5, industryScore: 5, capacityExpansion: false,
   financials: [], peers: [],
   governance: { ceo: NOT_DISCLOSED, experience: NOT_DISCLOSED, auditor: NOT_DISCLOSED, shareholding: NOT_DISCLOSED, litigationLevel: 'medium', flags: [] },

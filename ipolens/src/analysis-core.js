@@ -83,7 +83,11 @@ export function computeAssessment(input = {}) {
     sentiment: clamp(5 + (newsScore - 50) / 12 + Math.min(qib, 5) * .35 + Math.min(retail, 5) * .12 + clamp(gmp, -20, 30) / 15 + (institutionalSentiment === null ? 0 : (institutionalSentiment - 50) / 18) + (socialSentiment === null ? 0 : (socialSentiment - 50) / 25))
   };
   const total = round(Object.values(score).reduce((sum, item) => sum + item, 0), 1);
-  const recommendation = total >= 70 ? 'Strong Subscribe' : total >= 60 ? 'Subscribe' : total >= 50 ? 'Neutral / Apply selectively' : total >= 40 ? 'High Risk' : 'Avoid';
+  // A record with no audited financials cannot be scored — say so instead of scoring it 'Avoid',
+  // which would read as a negative judgement when it is really missing data.
+  const unscored = !(input.financials || []).length;
+  const recommendation = unscored ? 'Not scored yet'
+    : total >= 70 ? 'Strong Subscribe' : total >= 60 ? 'Subscribe' : total >= 50 ? 'Neutral / Apply selectively' : total >= 40 ? 'High Risk' : 'Avoid';
   const quality = round((score.business + score.industry + score.financials + score.growth + score.management + score.risks) / 6, 1);
   const listingCenter = clamp((score.sentiment - 5) * 4 + (score.valuation - 5) * 1.5 + (score.financials - 5), -12, 35);
   const uncertainty = clamp(14 - Math.min(history.length, 5) - Math.min(peers.length, 3) - (qib > 0 ? 1 : 0), 6, 14);
